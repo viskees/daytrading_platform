@@ -1,0 +1,25 @@
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+
+providers:
+  docker:
+    exposedByDefault: false
+  file:
+    directory: "/etc/traefik/dynamic"
+    watch: true
+
+api:
+  dashboard: true  # Dev only, but we'll serve it over 443 via router label
+
+log:
+  level: INFO          # INFO is fine too
+
+accessLog: {}

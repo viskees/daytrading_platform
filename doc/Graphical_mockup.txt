@@ -1,0 +1,657 @@
+import React, { useMemo, useState, useEffect } from "react";
+import { motion } from "framer-motion";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
+import {
+  LineChart as LineChartIcon,
+  LayoutDashboard,
+  LogIn,
+  LogOut,
+  UserPlus,
+  ShieldCheck,
+  Bell,
+  Calendar as CalendarIcon,
+  ArrowUpRight,
+  ArrowDownRight,
+  Radio,
+  Upload,
+  Settings,
+  Lock,
+  Home as HomeIcon,
+  BookOpen,
+  AlertTriangle,
+  Plus,
+  X,
+  Check,
+  Target,
+  Activity,
+} from "lucide-react";
+
+// shadcn/ui components
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Switch } from "@/components/ui/switch";
+
+// ================= Helpers & Dev Tests =================
+const mkSpark = (n = 24, base = 100) =>
+  Array.from({ length: n }).map((_, i) => ({
+    x: i,
+    y: base + Math.sin(i / 2) * 4 + (Math.random() - 0.5) * 3,
+  }));
+
+const STOCKS = [
+  { ticker: "AAPL", name: "Apple Inc.", price: 228.45, change: +1.24, vol: 54.2, currency: "USD" },
+  { ticker: "NVDA", name: "NVIDIA Corp.", price: 132.81, change: -2.17, vol: 68.9, currency: "USD" },
+  { ticker: "TSLA", name: "Tesla, Inc.", price: 273.12, change: +0.9, vol: 44.5, currency: "USD" },
+  { ticker: "ASML", name: "ASML Holding", price: 936.2, change: +3.12, vol: 12.1, currency: "EUR" },
+  { ticker: "AMZN", name: "Amazon.com", price: 190.23, change: -0.45, vol: 38.4, currency: "USD" },
+];
+
+// Sample trades for the Journal (today)
+const SAMPLE_TRADES = [
+  // Open
+  { id: "t1", status: "open", symbol: "AAPL", side: "LONG", entry: 227.8, stop: 226.9, size: 300, rrisk: 1.0, unreal: +0.6, note: "VWAP reclaim" },
+  { id: "t2", status: "open", symbol: "NVDA", side: "SHORT", entry: 133.5, stop: 134.2, size: 100, rrisk: 0.6, unreal: -0.3, note: "Lower high" },
+  // Closed
+  { id: "t3", status: "closed", symbol: "ASML", side: "LONG", entry: 930.0, stop: 927.0, size: 20, rrisk: 0.5, real: +1.2, note: "Breakout PB" },
+  { id: "t4", status: "closed", symbol: "TSLA", side: "SHORT", entry: 275.0, stop: 276.2, size: 50, rrisk: 0.4, real: -0.4, note: "Stop-out" },
+];
+
+function runDevTests() {
+  try {
+    console.group("UI Dev Tests");
+
+    // Test 1: mkSpark returns numeric points of desired length
+    const s = mkSpark(10, 50);
+    console.assert(Array.isArray(s) && s.length === 10, "mkSpark length");
+    console.assert(s.every(p => typeof p.x === "number" && typeof p.y === "number"), "mkSpark numeric");
+
+    // Test 2: CalendarGrid exists (fix for earlier unresolved reference)
+    console.assert(typeof CalendarGrid === "function", "CalendarGrid defined");
+
+    // Test 3: Plan text contains escaped comparisons
+    const plan = "Focus on RVOL > 2.0 and float < 100M";
+    console.assert(plan.includes("> 2.0") && plan.includes("< 100M"), "plan comparisons present");
+
+    // Test 4: Trades split & risk math
+    const open = SAMPLE_TRADES.filter(t=>t.status==="open");
+    const closed = SAMPLE_TRADES.filter(t=>t.status!=="open");
+    console.assert(open.length===2 && closed.length===2, "2 open / 2 closed");
+    const openRisk = +open.reduce((a,t)=>a+(t.rrisk||0),0).toFixed(2);
+    const realized = +(closed.reduce((a,t)=>a+(t.real||0),0)).toFixed(2);
+    console.assert(openRisk===1.6, `openRisk ${openRisk}`);
+    console.assert(realized===0.8, `realized ${realized}`);
+
+    // Test 5: Icon smoke (avoid CDN surprises)
+    const must = { HomeIcon, LayoutDashboard, LogIn, LogOut, UserPlus, ShieldCheck, Bell, CalendarIcon, ArrowUpRight, ArrowDownRight, Radio, Upload, Settings, Lock, LineChartIcon, AlertTriangle, Plus, X, Check, Target, Activity };
+    Object.entries(must).forEach(([k,v])=>console.assert(typeof v !== "undefined", `icon ${k}`));
+
+    console.groupEnd();
+  } catch(e) {
+    console.error("Dev tests failed:", e);
+  }
+}
+
+// ================= App Shell =================
+export default function TradingUIMock() {
+  const [route, setRoute] = useState("/home");
+  const [authed, setAuthed] = useState(false);
+  const [wsLive, setWsLive] = useState(true);
+
+  useEffect(()=>{ if (typeof window!=="undefined") runDevTests(); }, []);
+
+  const [prices, setPrices] = useState(()=>STOCKS.map(s=>({...s})));
+  useEffect(()=>{
+    if (!wsLive) return;
+    const id = setInterval(()=>{
+      setPrices(prev=>prev.map(p=>{
+        const drift = (Math.random()-0.5)*0.3;
+        const price = +(p.price+drift).toFixed(2);
+        const chg = +(price - p.price).toFixed(2);
+        return { ...p, price, change: +(p.change+chg).toFixed(2) };
+      }));
+    }, 1600);
+    return ()=>clearInterval(id);
+  },[wsLive]);
+
+  const go = (r)=>setRoute(r);
+  const onLogin = ()=>{ setAuthed(true); setRoute("/dashboard"); };
+  const onLogout = ()=>{ setAuthed(false); setRoute("/home"); };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-slate-100">
+      <TopNav authed={authed} onLogout={onLogout} onLoginClick={()=>go("/login")} onHome={()=>go("/home")} />
+
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pb-24">
+        {route==="/home" && <Home onLogin={()=>go("/login")} onLaunch={()=> authed ? go("/dashboard") : go("/login")} />}
+        {route==="/login" && <Login onLogin={onLogin} onRegister={()=>alert("Registration submitted. Await admin approval.")} />}
+        {route.startsWith("/dashboard") && authed && (
+          <Dashboard route={route} go={go} prices={prices} wsLive={wsLive} setWsLive={setWsLive} />
+        )}
+        {!authed && route.startsWith("/dashboard") && <Unauthorized onBack={()=>go("/login")} />}
+      </main>
+
+      <Footer />
+    </div>
+  );
+}
+
+function TopNav({ authed, onLogout, onLoginClick, onHome }){
+  return (
+    <div className="sticky top-0 z-40 backdrop-blur supports-[backdrop-filter]:bg-slate-900/60 border-b border-white/5">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="flex h-16 items-center justify-between">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={onHome}>
+            <motion.div whileHover={{ rotate: 6 }} className="p-2 rounded-xl bg-gradient-to-br from-emerald-500 to-cyan-500">
+              <LineChartIcon className="h-5 w-5 text-slate-950" />
+            </motion.div>
+            <span className="font-semibold tracking-tight text-lg">DayTrade Studio</span>
+          </div>
+          <div className="hidden md:flex items-center gap-6 text-sm text-slate-300">
+            <NavLink icon={<HomeIcon className="h-4 w-4"/>} label="Home" />
+            <NavLink icon={<BookOpen className="h-4 w-4"/>} label="Docs" />
+            <NavLink icon={<ShieldCheck className="h-4 w-4"/>} label="Security" />
+          </div>
+          <div className="flex items-center gap-3">
+            {authed ? (
+              <div className="flex items-center gap-3">
+                <Badge variant="secondary" className="bg-emerald-500/20 text-emerald-300 border-emerald-500/30">Pro</Badge>
+                <Avatar className="h-8 w-8"><AvatarFallback className="bg-slate-800">KV</AvatarFallback></Avatar>
+                <Button variant="ghost" size="sm" onClick={onLogout} className="gap-2"><LogOut className="h-4 w-4"/> Logout</Button>
+              </div>
+            ) : (
+              <Button onClick={onLoginClick} size="sm" className="gap-2"><LogIn className="h-4 w-4"/> Login</Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NavLink({ icon, label }){
+  return <button className="inline-flex items-center gap-2 hover:text-white transition-colors">{icon} {label}</button>;
+}
+
+// ================= Home =================
+function Home({ onLogin, onLaunch }){
+  return (
+    <div className="pt-16">
+      <section className="grid lg:grid-cols-2 gap-10 items-center">
+        <div>
+          <motion.h1 initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }} transition={{ duration:0.5 }} className="text-4xl sm:text-5xl font-extrabold tracking-tight">
+            Trade faster. Journal smarter. <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-400">Own your edge.</span>
+          </motion.h1>
+          <p className="mt-4 text-slate-300 leading-relaxed max-w-prose">I’m Kees, building a focused day‑trading workspace in Django: live watchlists, AI‑ready signals, and a risk‑first journal.</p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Button className="gap-2" onClick={onLaunch}><LayoutDashboard className="h-4 w-4"/> Launch App</Button>
+            <Button variant="secondary" className="gap-2" onClick={onLogin}><Lock className="h-4 w-4"/> Sign in</Button>
+          </div>
+          <div className="mt-6 flex items-center gap-4 text-sm text-slate-400">
+            <div className="flex items-center gap-2"><ShieldCheck className="h-4 w-4"/> MFA + Admin approval</div>
+            <div className="flex items-center gap-2"><Radio className="h-4 w-4"/> Live market feed</div>
+            <div className="flex items-center gap-2"><Bell className="h-4 w-4"/> Signal notifications</div>
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <ScreenCard title="Stocks of Interest" subtitle="Realtime watchlist"><MiniWatchlist /></ScreenCard>
+          <ScreenCard title="Journal & Calendar" subtitle="Risk‑aware summaries"><MiniJournal /></ScreenCard>
+          <ScreenCard className="sm:col-span-2" title="Signals" subtitle="Volume & momentum" dark><SignalsStrip /></ScreenCard>
+        </div>
+      </section>
+
+      <section className="mt-16 grid md:grid-cols-3 gap-6">
+        <Feature icon={<LineChartIcon className="h-5 w-5"/>} title="AI‑ready data">WebSocket prices, volume deltas, and clean feature sets—ready for your models.</Feature>
+        <Feature icon={<ShieldCheck className="h-5 w-5"/>} title="Security first">Email + password + MFA. Manual admin approval to enter the workspace.</Feature>
+        <Feature icon={<CalendarIcon className="h-5 w-5"/>} title="Risk‑aware journal">Upload charts, tag setups, track R, and view day/week PnL on a calendar.</Feature>
+      </section>
+    </div>
+  );
+}
+
+function ScreenCard({ title, subtitle, children, dark=false, className="" }){
+  return (
+    <Card className={`overflow-hidden border-white/10 ${dark?"bg-slate-900/70":"bg-slate-900/40"} ${className}`}>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center justify-between"><span>{title}</span><Badge variant="outline" className="border-white/10 text-slate-300">Preview</Badge></CardTitle>
+        <p className="text-xs text-slate-400 -mt-2">{subtitle}</p>
+      </CardHeader>
+      <CardContent>{children}</CardContent>
+    </Card>
+  );
+}
+
+function MiniWatchlist(){
+  const rows = useMemo(()=>STOCKS.slice(0,4).map(s=>({...s, spark: mkSpark(18, s.price)})), []);
+  return (
+    <div className="space-y-3">
+      {rows.map(r=> (
+        <div key={r.ticker} className="flex items-center justify-between gap-3">
+          <div className="w-14 font-mono text-sm">{r.ticker}</div>
+          <div className="flex-1"><Sparkline data={r.spark} /></div>
+          <div className="w-24 text-right font-mono">{r.price.toFixed(2)}</div>
+          <div className={`w-20 text-right font-mono ${r.change>=0?"text-emerald-400":"text-rose-400"}`}>
+            <span className="inline-flex items-center gap-1">{r.change>=0? <ArrowUpRight className="h-4 w-4"/> : <ArrowDownRight className="h-4 w-4"/>}{r.change.toFixed(2)}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MiniJournal(){
+  const stats = [
+    { k: "Win%", v: "54%" },
+    { k: "Avg R", v: "+0.42" },
+    { k: "Best R", v: "+2.8" },
+    { k: "Trades", v: "124" },
+  ];
+  return (
+    <div>
+      <div className="grid grid-cols-4 gap-2">
+        {stats.map(s=> (
+          <div key={s.k} className="rounded-xl bg-slate-800/60 p-2 text-center">
+            <div className="text-xs text-slate-400">{s.k}</div>
+            <div className="font-semibold">{s.v}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 text-xs text-slate-400">This week</div>
+      <div className="mt-2 grid grid-cols-7 gap-1">
+        {Array.from({ length: 14 }).map((_, i) => (<div key={i} className={`aspect-square rounded-md ${i%3===0?"bg-emerald-500/30":"bg-slate-800/60"}`} />))}
+      </div>
+    </div>
+  );
+}
+
+function SignalsStrip(){
+  const data = useMemo(()=>mkSpark(36, 100), []);
+  return (
+    <div className="h-32">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top:8, right:8, left:0, bottom:0 }}>
+          <XAxis dataKey="x" hide /><YAxis hide />
+          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(255,255,255,0.05)" }} labelStyle={{ color: "#94a3b8" }} />
+          <Line type="monotone" dataKey="y" dot={false} strokeWidth={2} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function Sparkline({ data }){
+  return (
+    <div className="h-8">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top:4, right:0, left:0, bottom:0 }}>
+          <XAxis dataKey="x" hide /><YAxis hide />
+          <Line type="monotone" dataKey="y" dot={false} strokeWidth={1.8} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function Feature({ icon, title, children }){
+  return (
+    <Card className="bg-slate-900/40 border-white/10">
+      <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-base">{icon}{title}</CardTitle></CardHeader>
+      <CardContent className="text-slate-300 text-sm">{children}</CardContent>
+    </Card>
+  );
+}
+
+// ================= Login =================
+function Login({ onLogin, onRegister }){
+  return (
+    <div className="pt-16 grid lg:grid-cols-2 gap-10 items-center">
+      <div>
+        <h2 className="text-3xl font-bold tracking-tight">Secure Login</h2>
+        <p className="mt-2 text-slate-300 max-w-prose">Use your email and password, then confirm with your authenticator app. New here? Register and I’ll approve access.</p>
+        <div className="mt-6 space-y-4">
+          <Card className="bg-slate-900/50 border-white/10"><CardContent className="pt-6 space-y-4">
+            <div><Label htmlFor="email">Email</Label><Input id="email" type="email" placeholder="you@example.com" className="mt-1" /></div>
+            <div><Label htmlFor="password">Password</Label><Input id="password" type="password" placeholder="••••••••" className="mt-1" /></div>
+            <div>
+              <Label htmlFor="mfa">MFA Code</Label>
+              <Input id="mfa" inputMode="numeric" placeholder="123 456" className="mt-1" />
+              <p className="mt-1 text-xs text-slate-400 flex items-center gap-2"><ShieldCheck className="h-3.5 w-3.5" /> Powered by TOTP (e.g., Google Authenticator)</p>
+            </div>
+            <Button className="w-full" onClick={onLogin}><LogIn className="h-4 w-4 mr-2"/> Login</Button>
+            <Button variant="secondary" className="w-full" onClick={onRegister}><UserPlus className="h-4 w-4 mr-2"/> Register</Button>
+            <p className="text-xs text-slate-400">Registration requires manual admin approval before first login.</p>
+          </CardContent></Card>
+        </div>
+      </div>
+      <div className="max-lg:order-first">
+        <ScreenCard title="Why secure access?" subtitle="Protect strategies & data">
+          <ul className="list-disc pl-5 text-sm text-slate-300 space-y-2">
+            <li>Per‑user data isolation—your watchlists & journal are private.</li>
+            <li>MFA hardens access, admin approval prevents spam signups.</li>
+            <li>Session management and device checks (design‑ready).</li>
+          </ul>
+        </ScreenCard>
+        <div className="mt-4"><ScreenCard title="Auth flow" subtitle="Django Allauth / custom MFA"><div className="text-xs text-slate-400">/register → email verify → admin confirms → /login → TOTP → /dashboard</div></ScreenCard></div>
+      </div>
+    </div>
+  );
+}
+
+function Unauthorized({ onBack }){
+  return (
+    <Card className="mt-12 bg-rose-950/30 border-rose-800/40"><CardHeader><CardTitle>Unauthorized</CardTitle></CardHeader><CardContent>
+      <p className="text-slate-300">You need to sign in to access the dashboard.</p>
+      <Button className="mt-4" onClick={onBack}><LogIn className="h-4 w-4 mr-2"/> Go to Login</Button>
+    </CardContent></Card>
+  );
+}
+
+// ================= Dashboard =================
+function Dashboard({ route, go, prices, wsLive, setWsLive }){
+  const [tab, setTab] = useState("overview");
+  useEffect(()=>{
+    if (route === "/dashboard/stocks") setTab("stocks");
+    else if (route === "/dashboard/journal") setTab("journal");
+  },[route]);
+
+  return (
+    <div className="pt-10 grid lg:grid-cols-[240px_1fr] gap-8">
+      <aside className="space-y-4">
+        <Card className="bg-slate-900/50 border-white/10"><CardHeader className="pb-2"><CardTitle className="text-base">Workspace</CardTitle></CardHeader><CardContent className="space-y-2">
+          <SideButton icon={<LayoutDashboard className="h-4 w-4"/>} label="Overview" onClick={()=>{ setTab("overview"); go("/dashboard"); }} active={tab==="overview"} />
+          <SideButton icon={<LineChartIcon className="h-4 w-4"/>} label="Stocks of Interest" onClick={()=>{ setTab("stocks"); go("/dashboard/stocks"); }} active={tab==="stocks"} />
+          <SideButton icon={<CalendarIcon className="h-4 w-4"/>} label="Journal" onClick={()=>{ setTab("journal"); go("/dashboard/journal"); }} active={tab==="journal"} />
+          <SideButton icon={<Settings className="h-4 w-4"/>} label="Settings" onClick={()=>alert("Settings placeholder")} />
+        </CardContent></Card>
+        <Card className="bg-slate-900/50 border-white/10"><CardHeader className="pb-2"><CardTitle className="text-base">Live Feed</CardTitle></CardHeader><CardContent className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm"><span className={`inline-flex items-center gap-2 ${wsLive?"text-emerald-300":"text-slate-400"}`}><span className={`h-2.5 w-2.5 rounded-full ${wsLive?"bg-emerald-400 animate-pulse":"bg-slate-500"}`} /> WebSocket</span></div>
+          <Switch checked={wsLive} onCheckedChange={setWsLive} />
+        </CardContent></Card>
+      </aside>
+
+      <section>
+        {tab==="overview" && <Overview prices={prices} />}
+        {tab==="stocks" && <StocksTable prices={prices} />}
+        {tab==="journal" && <JournalUI />}
+      </section>
+    </div>
+  );
+}
+
+function SideButton({ icon, label, onClick, active=false }){
+  return <button onClick={onClick} className={`w-full inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition ${active?"bg-slate-800 text-white":"hover:bg-slate-800/70 text-slate-300"}`}>{icon} {label}</button>;
+}
+
+function Overview({ prices }){
+  const movers = [...prices].sort((a,b)=>Math.abs(b.change)-Math.abs(a.change)).slice(0,3);
+  return (
+    <div className="space-y-6">
+      <div className="grid md:grid-cols-3 gap-4">
+        <StatCard label="Daily R limit" value="4R" sub="Lockout triggers beyond this" />
+        <StatCard label="Open risk" value="1.2R" sub="Across all positions" />
+        <StatCard label="Journal streak" value="7 days" sub="Logged without gaps" />
+      </div>
+      <Card className="bg-slate-900/50 border-white/10"><CardHeader className="pb-2"><CardTitle className="text-base">Top Movers</CardTitle></CardHeader><CardContent>
+        <div className="grid md:grid-cols-3 gap-4">
+          {movers.map(m=> (
+            <div key={m.ticker} className="rounded-xl bg-slate-800/60 p-4">
+              <div className="flex items-center justify-between"><div className="font-semibold">{m.ticker}</div><Badge variant="outline" className={`${m.change>=0?"text-emerald-300 border-emerald-400/30":"text-rose-300 border-rose-400/30"}`}>{m.currency}</Badge></div>
+              <div className="mt-2 h-16"><Sparkline data={mkSpark(24, m.price)} /></div>
+              <div className={`mt-2 font-mono ${m.change>=0?"text-emerald-400":"text-rose-400"}`}>{m.change>=0?"+":""}{m.change.toFixed(2)}</div>
+            </div>
+          ))}
+        </div>
+      </CardContent></Card>
+      <div className="grid md:grid-cols-2 gap-4">
+        <Card className="bg-slate-900/50 border-white/10"><CardHeader className="pb-2"><CardTitle className="text-base">Today’s Plan</CardTitle></CardHeader><CardContent className="text-sm text-slate-300 space-y-2">
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Focus on RVOL &gt; 2.0 and float &lt; 100M</li>
+            <li>First 30 min: scalp VWAP reclaims only</li>
+            <li>Max 5 trades; stop after -2R</li>
+          </ul>
+        </CardContent></Card>
+        <Card className="bg-slate-900/50 border-white/10"><CardHeader className="pb-2"><CardTitle className="text-base">Recent Journal</CardTitle></CardHeader><CardContent className="space-y-3">
+          {["Breakout fail—exited early, good risk cut.", "Great read on higher‑low pullback.", "Overtraded midday range—reduce size."].map((t,i)=>(<div key={i} className="text-sm text-slate-300 rounded-lg p-3 bg-slate-800/60">{t}</div>))}
+        </CardContent></Card>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, sub }){
+  return <div className="rounded-2xl bg-slate-900/50 border border-white/10 p-4"><div className="text-xs text-slate-400">{label}</div><div className="text-2xl font-bold mt-1">{value}</div><div className="text-xs text-slate-500 mt-1">{sub}</div></div>;
+}
+
+function StocksTable({ prices }){
+  const [q, setQ] = useState("");
+  const filtered = prices.filter(p=> p.ticker.toLowerCase().includes(q.toLowerCase()) || p.name.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <Card className="bg-slate-900/50 border-white/10">
+      <CardHeader className="pb-2 flex flex-col gap-2"><CardTitle className="text-base flex items-center justify-between"><span>Stocks of Interest</span><Button size="sm" variant="secondary" className="gap-2"><Bell className="h-4 w-4"/> Manage Signals</Button></CardTitle>
+        <div className="flex items-center gap-3"><Input placeholder="Search tickers…" value={q} onChange={e=>setQ(e.target.value)} className="max-w-xs" />
+          <Tabs defaultValue="all"><TabsList><TabsTrigger value="all">All</TabsTrigger><TabsTrigger value="gainers">Gainers</TabsTrigger><TabsTrigger value="losers">Losers</TabsTrigger></TabsList></Tabs>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto rounded-xl border border-white/5">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-900/60 text-slate-300"><tr>
+              <th className="text-left px-4 py-2">Ticker</th>
+              <th className="text-left px-4 py-2">Name</th>
+              <th className="text-right px-4 py-2">Price</th>
+              <th className="text-right px-4 py-2">Δ</th>
+              <th className="text-right px-4 py-2">RVOL</th>
+              <th className="text-left px-4 py-2">Spark</th>
+              <th className="text-left px-4 py-2">Status</th>
+            </tr></thead>
+            <tbody className="divide-y divide-white/5">
+              {filtered.map(r=> (
+                <tr key={r.ticker} className="hover:bg-slate-800/40">
+                  <td className="px-4 py-2 font-mono font-semibold">{r.ticker}</td>
+                  <td className="px-4 py-2 text-slate-300">{r.name}</td>
+                  <td className="px-4 py-2 font-mono text-right">{r.price.toFixed(2)} {r.currency}</td>
+                  <td className={`px-4 py-2 font-mono text-right ${r.change>=0?"text-emerald-400":"text-rose-400"}`}>{r.change>=0?"+":""}{r.change.toFixed(2)}</td>
+                  <td className="px-4 py-2 font-mono text-right">{(1.5 + Math.random()*1.2).toFixed(2)}</td>
+                  <td className="px-4 py-2"><div className="w-40"><Sparkline data={mkSpark(22, r.price)} /></div></td>
+                  <td className="px-4 py-2"><span className="inline-flex items-center gap-2 text-emerald-300"><span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse"/> LIVE</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ================= Journal =================
+function JournalUI(){
+  const [trades, setTrades] = useState(SAMPLE_TRADES);
+  const [risk, setRisk] = useState({ dailyLimitR: 4, perTradeMaxR: 1.5, maxOpenRiskR: 2.5, lockoutOnBreach: true });
+
+  const openTrades = trades.filter(t=>t.status==="open");
+  const closedTrades = trades.filter(t=>t.status!=="open");
+  const openRiskR = +openTrades.reduce((a,t)=>a+(t.rrisk||0),0).toFixed(2);
+  const realizedR = +closedTrades.reduce((a,t)=>a+(t.real||0),0).toFixed(2);
+  const totalDayR = +(openRiskR + realizedR).toFixed(2);
+  const breached = totalDayR <= -risk.dailyLimitR || openRiskR > risk.maxOpenRiskR;
+
+  function closeTrade(id, resultR){ setTrades(prev=> prev.map(t=> t.id===id ? { ...t, status:"closed", real: resultR, unreal: undefined } : t)); }
+  function addMockTrade(){ const id = `t${Math.random().toString(36).slice(2,6)}`; setTrades(prev=> [{ id, status:"open", symbol:"AMZN", side:"LONG", entry:190.1, stop:189.5, size:120, rrisk:0.4, unreal:+0.1, note:"Trend pullback" }, ...prev]); }
+
+  return (
+    <div className="space-y-6">
+      {/* Calendar + Stats */}
+      <Card className="bg-slate-900/50 border-white/10">
+        <CardHeader className="pb-2 flex items-center justify-between"><CardTitle className="text-base">Journal</CardTitle>
+          <div className="flex items-center gap-2"><Button size="sm" variant="secondary" onClick={addMockTrade} className="gap-2"><Plus className="h-4 w-4"/> Add trade</Button></div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 space-y-6">
+              <TradesPanel openTrades={openTrades} closedTrades={closedTrades} onClose={(id, r)=>closeTrade(id, r)} />
+              <CalendarGrid />
+            </div>
+            <div className="space-y-4">
+              <RiskPanel risk={risk} setRisk={setRisk} openRiskR={openRiskR} realizedR={realizedR} totalDayR={totalDayR} breached={breached} />
+              <Card className="bg-slate-900/60 border-white/10"><CardHeader className="pb-2"><CardTitle className="text-sm">Quick Stats</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-3 text-sm">
+                <div className="rounded-lg bg-slate-800/60 p-3"><div className="text-xs text-slate-400">This month R</div><div className="font-semibold text-emerald-300">+3.4R</div></div>
+                <div className="rounded-lg bg-slate-800/60 p-3"><div className="text-xs text-slate-400">Max drawdown</div><div className="font-semibold text-rose-300">-2.1R</div></div>
+                <div className="rounded-lg bg-slate-800/60 p-3"><div className="text-xs text-slate-400">Win rate</div><div className="font-semibold">56%</div></div>
+                <div className="rounded-lg bg-slate-800/60 p-3"><div className="text-xs text-slate-400">Avg hold</div><div className="font-semibold">12m</div></div>
+              </CardContent></Card>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Risk Management Interface */}
+      <Card className={`border-white/10 ${breached?"bg-rose-950/30 border-rose-800/40":"bg-slate-900/50"}`}>
+        <CardHeader className="pb-2 flex items-center justify-between"><CardTitle className="text-base flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-400"/> Risk Management</CardTitle></CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <div className="grid md:grid-cols-3 gap-3">
+            <div className="rounded-lg bg-slate-800/60 p-3"><div className="text-xs text-slate-400">Max Daily Loss</div><div className="font-semibold text-rose-300">-{risk.dailyLimitR}R</div></div>
+            <div className="rounded-lg bg-slate-800/60 p-3"><div className="text-xs text-slate-400">Current Drawdown</div><div className={`font-semibold ${totalDayR>=0?"text-emerald-300":""}`}>{totalDayR>0?"+":""}{totalDayR}R</div></div>
+            <div className="rounded-lg bg-slate-800/60 p-3"><div className="text-xs text-slate-400">Open Risk</div><div className="font-semibold text-emerald-300">{openRiskR}R</div></div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div><Label htmlFor="dailyR">Daily limit (R)</Label><Input id="dailyR" type="number" step="0.5" value={risk.dailyLimitR} onChange={e=>setRisk(r=>({ ...r, dailyLimitR: parseFloat(e.target.value||"0") }))} className="mt-1"/></div>
+            <div><Label htmlFor="perTradeR">Max per trade (R)</Label><Input id="perTradeR" type="number" step="0.1" value={risk.perTradeMaxR} onChange={e=>setRisk(r=>({ ...r, perTradeMaxR: parseFloat(e.target.value||"0") }))} className="mt-1"/></div>
+            <div><Label htmlFor="openRisk">Max open risk (R)</Label><Input id="openRisk" type="number" step="0.1" value={risk.maxOpenRiskR} onChange={e=>setRisk(r=>({ ...r, maxOpenRiskR: parseFloat(e.target.value||"0") }))} className="mt-1"/></div>
+            <div className="flex items-center justify-between rounded-lg bg-slate-800/60 px-3 py-2"><div className="text-sm">Lockout on breach</div><Switch checked={risk.lockoutOnBreach} onCheckedChange={(v)=>setRisk(r=>({ ...r, lockoutOnBreach: v }))} /></div>
+          </div>
+          {breached && (<div className="rounded-lg bg-rose-900/40 border border-rose-800/40 p-3 text-rose-200 text-sm">Limit breached. New trades should be blocked by the server (design hint).</div>)}
+        </CardContent>
+      </Card>
+
+      {/* Open / Closed Trades simple recent entries */}
+      <Card className="bg-slate-900/50 border-white/10"><CardHeader className="pb-2"><CardTitle className="text-base">Recent Entries</CardTitle></CardHeader><CardContent className="space-y-3">
+        {[1,2,3].map(i=> (
+          <div key={i} className="rounded-xl bg-slate-800/60 p-4">
+            <div className="flex items-center justify-between"><div className="font-semibold">{i===1?"VWAP Reclaim":"Range Break"} — AAPL</div><Badge variant="outline" className="border-white/10">+{i===2?"1.1":"0.6"}R</Badge></div>
+            <p className="text-sm text-slate-300 mt-1">Entry on pullback to 9EMA, partial at 1R, trailed remainder. Good discipline.</p>
+          </div>
+        ))}
+      </CardContent></Card>
+    </div>
+  );
+}
+
+function TradesPanel({ openTrades, closedTrades, onClose }){
+  const [tab, setTab] = useState("open");
+  return (
+    <Card className="bg-slate-900/60 border-white/10">
+      <CardHeader className="pb-2 flex items-center justify-between"><CardTitle className="text-sm flex items-center gap-2"><Activity className="h-4 w-4"/> Trades — Today</CardTitle>
+        <Tabs value={tab} onValueChange={setTab}><TabsList><TabsTrigger value="open">Open ({openTrades.length})</TabsTrigger><TabsTrigger value="closed">Closed ({closedTrades.length})</TabsTrigger></TabsList></Tabs>
+      </CardHeader>
+      <CardContent>{tab==="open" ? (<TradeTable trades={openTrades} kind="open" onClose={onClose} />) : (<TradeTable trades={closedTrades} kind="closed" onClose={onClose} />)}</CardContent>
+    </Card>
+  );
+}
+
+function TradeTable({ trades, kind, onClose }){
+  return (
+    <div className="overflow-x-auto rounded-xl border border-white/5">
+      <table className="min-w-full text-sm">
+        <thead className="bg-slate-900/60 text-slate-300"><tr>
+          <th className="text-left px-3 py-2">Symbol</th>
+          <th className="text-left px-3 py-2">Side</th>
+          <th className="text-right px-3 py-2">Entry</th>
+          <th className="text-right px-3 py-2">Stop</th>
+          <th className="text-right px-3 py-2">Size</th>
+          <th className="text-right px-3 py-2">Risk (R)</th>
+          {kind==="open" ? (<th className="text-right px-3 py-2">Unreal (R)</th>) : (<th className="text-right px-3 py-2">Realized (R)</th>)}
+          <th className="text-left px-3 py-2">Note</th>
+          <th className="text-right px-3 py-2">Actions</th>
+        </tr></thead>
+        <tbody className="divide-y divide-white/5">
+          {trades.map(t=> (
+            <tr key={t.id} className="hover:bg-slate-800/40">
+              <td className="px-3 py-2 font-mono font-semibold">{t.symbol}</td>
+              <td className={`px-3 py-2 font-mono ${t.side==="LONG"?"text-emerald-300":"text-rose-300"}`}>{t.side}</td>
+              <td className="px-3 py-2 font-mono text-right">{t.entry?.toFixed?.(2) ?? "-"}</td>
+              <td className="px-3 py-2 font-mono text-right">{t.stop?.toFixed?.(2) ?? "-"}</td>
+              <td className="px-3 py-2 font-mono text-right">{t.size}</td>
+              <td className="px-3 py-2 font-mono text-right">{t.rrisk?.toFixed?.(2) ?? "-"}</td>
+              {kind==="open" ? (
+                <td className={`px-3 py-2 font-mono text-right ${t.unreal>=0?"text-emerald-400":"text-rose-400"}`}>{t.unreal>0?"+":""}{t.unreal?.toFixed?.(2) ?? "-"}</td>
+              ) : (
+                <td className={`px-3 py-2 font-mono text-right ${t.real>=0?"text-emerald-400":"text-rose-400"}`}>{t.real>0?"+":""}{t.real?.toFixed?.(2) ?? "-"}</td>
+              )}
+              <td className="px-3 py-2 text-slate-300">{t.note}</td>
+              <td className="px-3 py-2 text-right">
+                {kind==="open" ? (
+                  <div className="inline-flex gap-2">
+                    <Button size="sm" variant="secondary" className="gap-1" onClick={()=>onClose(t.id, +((t.unreal ?? 0).toFixed(2)))}><Check className="h-4 w-4"/> Close @ R</Button>
+                    <Button size="sm" variant="ghost" className="gap-1" onClick={()=>onClose(t.id, -t.rrisk)}><X className="h-4 w-4"/> Stop-out</Button>
+                  </div>
+                ) : (<span className="text-slate-400">—</span>)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RiskPanel({ risk, setRisk, openRiskR, realizedR, totalDayR, breached }){
+  return (
+    <Card className={`border-white/10 ${breached?"bg-rose-950/30 border-rose-800/40":"bg-slate-900/60"}`}>
+      <CardHeader className="pb-2 flex items-center justify-between"><CardTitle className="text-sm flex items-center gap-2"><Target className="h-4 w-4"/> Risk Controls</CardTitle></CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-lg bg-slate-800/60 p-3"><div className="text-xs text-slate-400">Open risk</div><div className="font-mono text-emerald-300">{openRiskR.toFixed(2)}R</div></div>
+          <div className="rounded-lg bg-slate-800/60 p-3"><div className="text-xs text-slate-400">Realized</div><div className={`font-mono ${realizedR>=0?"text-emerald-300":"text-rose-300"}`}>{realizedR>0?"+":""}{realizedR.toFixed(2)}R</div></div>
+          <div className="rounded-lg bg-slate-800/60 p-3 col-span-2"><div className="text-xs text-slate-400">Total today</div><div className={`font-mono ${totalDayR>=0?"text-emerald-300":"text-rose-300"}`}>{totalDayR>0?"+":""}{totalDayR.toFixed(2)}R</div></div>
+        </div>
+        <div className="h-px bg-white/10" />
+        <div className="grid grid-cols-2 gap-3 items-end">
+          <div><Label htmlFor="dailyR2">Daily limit (R)</Label><Input id="dailyR2" type="number" step="0.5" value={risk.dailyLimitR} onChange={e=>setRisk(r=>({ ...r, dailyLimitR: parseFloat(e.target.value||"0") }))} className="mt-1"/></div>
+          <div><Label htmlFor="perTrade">Max per trade (R)</Label><Input id="perTrade" type="number" step="0.1" value={risk.perTradeMaxR} onChange={e=>setRisk(r=>({ ...r, perTradeMaxR: parseFloat(e.target.value||"0") }))} className="mt-1"/></div>
+          <div><Label htmlFor="maxOpen">Max open risk (R)</Label><Input id="maxOpen" type="number" step="0.1" value={risk.maxOpenRiskR} onChange={e=>setRisk(r=>({ ...r, maxOpenRiskR: parseFloat(e.target.value||"0") }))} className="mt-1"/></div>
+          <div className="flex items-center justify-between rounded-lg bg-slate-800/60 px-3 py-2"><div className="text-sm">Lockout on breach</div><Switch checked={risk.lockoutOnBreach} onCheckedChange={(v)=>setRisk(r=>({ ...r, lockoutOnBreach: v }))} /></div>
+        </div>
+        {breached && (<div className="rounded-lg bg-rose-900/40 border border-rose-800/40 p-3 text-rose-200 text-sm">Limit breached. New trades should be blocked by the server (design hint).</div>)}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CalendarGrid(){
+  const days = Array.from({ length: 35 }).map((_, i) => ({ i, pnl: i%7===0? -0.8 : i%5===0? +1.3 : i%3===0? +0.2 : 0 }));
+  return (
+    <div>
+      <div className="grid grid-cols-7 text-xs text-slate-400 mb-2">{["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d=> <div key={d} className="px-2 py-1">{d}</div>)}</div>
+      <div className="grid grid-cols-7 gap-1">
+        {days.map(d=> (
+          <div key={d.i} className={`aspect-square rounded-lg p-2 flex flex-col justify-between ${d.pnl>0?"bg-emerald-500/20": d.pnl<0?"bg-rose-500/20":"bg-slate-800/60"}`}>
+            <div className="text-[10px] text-slate-400">{d.i+1}</div>
+            <div className="text-[11px] font-mono text-right">{d.pnl===0?"":`${d.pnl>0?"+":""}${d.pnl}R`}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ================= Footer =================
+function Footer(){
+  return (
+    <footer className="border-t border-white/5 mt-20"><div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 text-sm text-slate-400 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div>© {new Date().getFullYear()} DayTrade Studio — crafted in Django</div>
+      <div className="flex items-center gap-4"><a className="hover:text-white" href="#">Privacy</a><a className="hover:text-white" href="#">Security</a><a className="hover:text-white" href="#">Contact</a></div>
+    </div></footer>
+  );
+}

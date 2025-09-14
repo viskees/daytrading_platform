@@ -1,0 +1,35 @@
+{
+  // Ensure EditorConfig overrides VS Code defaults
+  "editorconfig.enable": true,
+
+  // General formatting
+  "editor.formatOnSave": true,
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.eol": "\n",
+
+  // Python
+  "python.defaultInterpreterPath": "python3",
+  "python.analysis.autoImportCompletions": true,
+
+  // YAML
+  "[yaml]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+
+  // Python
+  "[python]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4
+  },
+
+  // Makefile (force tabs)
+  "[makefile]": {
+    "editor.insertSpaces": false,
+    "editor.tabSize": 4
+  },
+
+  // Docker
+  "docker.composeCommand": "docker compose"
+}
