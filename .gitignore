@@ -1,18 +1,90 @@
-# Python
+# -------------------------
+# OS cruft
+# -------------------------
+.DS_Store
+Thumbs.db
+
+# -------------------------
+# Editors / IDE
+# -------------------------
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+
+# -------------------------
+# Python / Django
+# -------------------------
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.dmypy.json
 
-# Django
-/staticfiles/
+# Django logs & local settings
+*.log
+local_settings.py
 
-# VS Code
-.vscode/*.log
+# SQLite (keep your real DB elsewhere)
+db.sqlite3
+db.sqlite3-*
+*.sqlite3
+*.sqlite3-journal
 
-# Docker/Traefik
-docker/traefik/acme/acme.json
-docker/traefik/dev/certs/*.pem
+# Media uploads (don’t version user data)
+django/app/media/
+!django/app/media/.gitkeep
 
-# env & secrets
+# Collected/static build output (Vite + collectstatic)
+django/app/staticfiles/
+!django/app/staticfiles/.gitkeep
+
+# -------------------------
+# Environment / secrets
+# -------------------------
 .env
-.env.*          # .env.dev / .env.prod stay local
-docker/traefik/acme/acme.json
+.env.*
+!.env.example
+.venv/
+venv/
+.direnv/
+*.envrc
+
+# -------------------------
+# Frontend (React/Vite)
+# -------------------------
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+frontend/coverage/
+frontend/npm-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+
+# Don’t ignore the lockfile — keep it!
+# (we DO want package-lock.json tracked)
+# frontend/package-lock.json
+
+# -------------------------
+# Docker / local overrides
+# -------------------------
+docker/traefik/acme.json
+docker/traefik/certs/
+docker/*.local.*
+docker-compose.override.yml
