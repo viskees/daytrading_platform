@@ -1,5 +1,14 @@
 
 services:
+  # build the SPA once; no long-lived Node
+  frontend-build:
+    image: node:20
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /workspace/frontend
+    command: sh -lc "npm ci || npm install; npm run build"
+    volumes:
+      - ./:/workspace
+      # ⬇️ with bind mounts, no need to mount a volume here
   traefik:
     image: traefik:v3.1
     command: --providers.docker --providers.file.directory=/etc/traefik/dynamic
@@ -14,41 +23,46 @@ services:
     networks: [web]
     labels:
       - traefik.enable=true
-      # dashboard over HTTPS (no 8080 published)
-      - traefik.http.routers.traefik.rule=Host(`traefik.localhost`)
-      - traefik.http.routers.traefik.entrypoints=websecure
-      - traefik.http.routers.traefik.tls=true
-      - traefik.http.routers.traefik.service=api@internal
+      - traefik.http.routers.static.rule=Host(`localhost`) && PathPrefix(`/static`)
+      - traefik.http.routers.static.entrypoints=websecure
+      - traefik.http.routers.static.tls=true
+      - traefik.http.services.static.loadbalancer.server.port=80
 
-  static-perms:
-    image: alpine:3.20
-    user: "0:0"   # run as root
-    command: sh -lc "mkdir -p /srv/static && chown -R ${UID:-1000}:${GID:-1000} /srv/static"
-    volumes:
-      - staticfiles_dev:/srv/static
-    restart: "no"
+      - traefik.http.routers.media.rule=Host(`localhost`) && PathPrefix(`/media`)
+      - traefik.http.routers.media.entrypoints=websecure
+      - traefik.http.routers.media.tls=true
+      - traefik.http.services.media.loadbalancer.server.port=80
+
+      - traefik.docker.network=daytrading_platform_web
+
+  # static-perms:
+  #   image: alpine:3.20
+  #   user: "0:0"   # run as root
+  #   command: sh -lc "mkdir -p /srv/static && chown -R ${UID:-1000}:${GID:-1000} /srv/static"
+  #   volumes:
+  #     - staticfiles_dev:/srv/static
+  #   restart: "no"
 
   django:
-    user: "${UID:-1000}:${GID:-1000}"   # keep your UID/GID if you added that
+    user: "${UID:-1000}:${GID:-1000}"
     build:
       context: ./django
     env_file: .env.dev
     volumes:
       - ./django/app:/app/app
       - ./.env.dev:/app/.env.dev:ro
-      - staticfiles_dev:/app/app/staticfiles  # collectstatic target
+      # ⬇️ BIND the host static folder directly (replace the volume)
+      - ./django/app/staticfiles:/app/app/staticfiles
+      - media_dev:/app/app/media
     networks: [web, internal]
-    expose:
-      - "8000"
+    expose: ["8000"]
     depends_on:
-      static-perms:
-        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     labels:
       - traefik.enable=true
       - traefik.docker.network=daytrading_platform_web
-      - traefik.http.routers.django.rule=Host(`localhost`)
+      - traefik.http.routers.django.rule=Host(`localhost`) && PathPrefix(`/`)
       - traefik.http.routers.django.entrypoints=websecure
       - traefik.http.routers.django.tls=true
       - traefik.http.routers.django.service=django-svc
@@ -84,24 +98,16 @@ services:
   static:
     image: caddy:2-alpine
     volumes:
-      - staticfiles_dev:/srv/static # same volume as Django's STATIC_ROOT
+      - ./django/app/staticfiles:/srv/static:ro
+      - ./django/app/media:/srv/media:ro
       - ./docker/static/Caddyfile:/etc/caddy/Caddyfile:ro
-    networks:
-      - web
-      - internal
+    networks: [web]
     labels:
       - traefik.enable=true
-      # Route only /static to Caddy
-      - traefik.http.routers.static.rule=Host(`localhost`) && PathPrefix(`/static`)
+      - traefik.http.routers.static.rule=Host(`localhost`) && (PathPrefix(`/static`) || PathPrefix(`/media`))
       - traefik.http.routers.static.entrypoints=websecure
       - traefik.http.routers.static.tls=true
-      - traefik.http.routers.static.priority=100
-      - traefik.http.routers.static.middlewares=static-strip@docker          # 👈 add
-      - traefik.http.middlewares.static-strip.stripprefix.prefixes=/static
       - traefik.http.services.static.loadbalancer.server.port=80
-      # IMPORTANT: use the same docker network Traefik uses for others
-      - traefik.docker.network=daytrading_platform_web   # replace with your actual web network name
-
 
 networks:
   web:
@@ -110,4 +116,4 @@ networks:
 volumes:
   pgdata_dev:
   pgadmin_dev:
-  staticfiles_dev:
+  media_dev:

@@ -135,6 +135,7 @@ ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=["*"])
 INSTALLED_APPS = [
     'django.contrib.admin','django.contrib.auth','django.contrib.contenttypes',
     'django.contrib.sessions','django.contrib.messages','django.contrib.staticfiles',
+    'corsheaders', 'rest_framework', 'journal'
 ]
 
 MIDDLEWARE = [
@@ -145,6 +146,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    "corsheaders.middleware.CorsMiddleware"
 ]
 
 ROOT_URLCONF = 'core.urls'
@@ -172,8 +174,11 @@ DATABASES = {
   }
 }
 
-STATIC_URL = 'static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 # Django 4.2+/5.0 style: pick the manifest backend (no WhiteNoise)
 STORAGES = {
@@ -182,6 +187,6 @@ STORAGES = {
     }
 }
 
-
+CORS_ALLOW_ALL_ORIGINS = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 CSRF_TRUSTED_ORIGINS = [f"https://{h}" for h in ALLOWED_HOSTS if h not in ['*']]

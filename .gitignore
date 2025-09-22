@@ -46,13 +46,15 @@ db.sqlite3-*
 *.sqlite3
 *.sqlite3-journal
 
-# Media uploads (don’t version user data)
-django/app/media/
-!django/app/media/.gitkeep
-
+# -------------------------
 # Collected/static build output (Vite + collectstatic)
-django/app/staticfiles/
+# (Order matters: ignore folder, then unignore the keeper)
+django/app/staticfiles/*
 !django/app/staticfiles/.gitkeep
+
+# Media uploads (don’t version user data)
+django/app/media/*
+!django/app/media/.gitkeep
 
 # -------------------------
 # Environment / secrets
@@ -77,13 +79,11 @@ frontend/npm-debug.log*
 frontend/yarn-error.log*
 frontend/pnpm-debug.log*
 
-# Don’t ignore the lockfile — keep it!
-# (we DO want package-lock.json tracked)
-# frontend/package-lock.json
-
 # -------------------------
 # Docker / local overrides
 # -------------------------
+docker/traefik/acme/
+docker/traefik/dev/certs/
 docker/traefik/acme.json
 docker/traefik/certs/
 docker/*.local.*
