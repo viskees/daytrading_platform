@@ -1,806 +1,669 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { useEffect, useMemo, useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Upload, Plus, Trash2, TrendingUp, ShieldCheck, Calendar as CalendarIcon, Activity, NotebookPen, Settings, PlugZap, Save, Bug, Sun, Moon } from "lucide-react";
 
-/**
- * 🔧 FIX SUMMARY (build + runtime)
- * - Ensured theme types are strict: `getInitialTheme()` always returns a valid `Theme` ("light"|"dark").
- * - `useTheme()` now uses a lazy initializer `useState<Theme>(() => getInitialTheme())` to avoid SSR/window issues.
- * - Kept Select safety: never render <SelectItem value="">; disable Selects when empty.
- * - Fixed earlier reference bug by using `dollarsRisk` prop inside PositionSizer.
- * - Added/kept DevTests with more cases.
- */
-
-// ---- Dev toggle ----
-const SHOW_DEV_TESTS = false;
-
-// ---- Theme ----
-const THEME_KEY = "dtp.theme" as const;
-type Theme = "light" | "dark";
-
-function getInitialTheme(): Theme {
-  // Default to DARK unless a saved choice exists.
-  if (typeof window === "undefined") return "dark";
-  const saved = window.localStorage.getItem(THEME_KEY);
-  if (saved === "light" || saved === "dark") return saved;
-  return "dark";
-}
-
-function useTheme() {
-  const [theme, setTheme] = useState<Theme>(() => getInitialTheme());
-
-  // Apply to <html>, <body>, data-theme, and persist
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const root = document.documentElement;
-    const body = document.body;
-
-    root.classList.toggle("dark", theme === "dark");
-    body?.classList.toggle("dark", theme === "dark");
-
-    root.setAttribute("data-theme", theme);
-    body?.setAttribute("data-theme", theme);
-
-    window.localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
-
-  // React to system changes only if no explicit saved choice
-  useEffect(() => {
-    const mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
-    const onChange = (e: MediaQueryListEvent) => {
-      const saved = window.localStorage.getItem(THEME_KEY);
-      if (saved !== "light" && saved !== "dark") setTheme(e.matches ? "dark" : "light");
-    };
-    mq?.addEventListener?.("change", onChange);
-    return () => mq?.removeEventListener?.("change", onChange);
-  }, []);
-
-  const toggle = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
-  return { theme, setTheme, toggle };
-}
-
-function ThemeToggleButton({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
-  return (
-    <Button type="button" variant="ghost" size="icon" aria-label="Toggle theme" aria-pressed={theme === "dark"} onClick={onToggle} className="rounded-2xl">
-      {theme === "dark" ? <Sun className="w-5 h-5"/> : <Moon className="w-5 h-5"/>}
-    </Button>
-  );
-}
-
-// --- Helpers ---
-const formatCurrency = (n: number) => new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(n);
-const todayISO = () => new Date().toISOString().slice(0,10);
-
-// --- Types ---
-interface WatchedTicker { symbol: string; notes?: string; }
-interface Tick { t: number; price: number; volume?: number }
-interface QuoteMap { [symbol: string]: Tick }
-interface JournalEntry {
-  id: string;
-  date: string; // YYYY-MM-DD
-  symbol: string;
-  direction: "LONG" | "SHORT";
-  size: number; // shares
-  entryPrice: number;
-  exitPrice?: number; // if closed
-  open: boolean;
-  tags: string[];
-  notes?: string;
-  images: string[]; // data URLs
-}
-interface RiskPolicy {
-  accountEquity: number; // current equity
-  dayStartEquity: number; // equity at market open
-  maxRiskPerTradePct: number; // e.g. 2
-  maxDailyLossPct: number; // e.g. 4
-  maxTradesPerDay: number;  // e.g. 6
-  lockoutEnabled: boolean;
-}
-
-// --- LocalStorage keys (simple persistence until backend wiring) ---
-const LS_KEYS = {
-  tickers: "dtp.tickers",
-  journal: "dtp.journal",
-  risk: "dtp.risk",
+// === Types: mirror the future Django API contracts ===
+export type RiskPolicy = {
+  maxRiskPerTradePct: number;
+  maxDailyLossPct: number;
+  maxTradesPerDay: number;
 };
 
-// --- Pure utils (also used by DevTests) ---
-function computeDailySummary(entries: JournalEntry[]) {
-  const map: Record<string, { realized: number; trades: number }> = {};
-  for (const j of entries) {
-    if (!map[j.date]) map[j.date] = { realized: 0, trades: 0 };
-    map[j.date].trades += 1;
-    if (!j.open && typeof j.exitPrice === "number") {
-      const r = (j.exitPrice - j.entryPrice) * (j.direction === "LONG" ? 1 : -1) * j.size;
-      map[j.date].realized += r;
-    }
-  }
-  return map;
-}
-function positionSize(dollarsRisk: number, entry?: number, stop?: number) {
-  if (entry == null || stop == null) return 0;
-  const perShare = Math.max(0, entry - stop);
-  return perShare > 0 ? Math.floor(dollarsRisk / perShare) : 0;
-}
-function shouldLockout(todaysRealized: number, maxDailyLoss: number, enabled: boolean) {
-  return enabled && (-todaysRealized) >= maxDailyLoss;
+export type Trade = {
+  id: string;
+  ticker: string;
+  side: "LONG" | "SHORT";
+  entryPrice: number;
+  entryTime: string; // ISO
+  stopLoss?: number;
+  target?: number;
+  riskR?: number; // computed server-side later
+  size?: number; // shares/contracts
+  notes?: string;
+  strategyTags?: string[];
+  status: "OPEN" | "CLOSED";
+};
+
+export type Ticker = {
+  symbol: string;
+  last: number;
+  volume: number;
+  relVol?: number; // relative volume
+  changePct?: number; // % change on the day
+};
+
+// === Auth & Settings types ===
+export type User = {
+  id: string;
+  email: string;
+  twoFactorEnabled: boolean;
+};
+
+export type UserSettings = {
+  theme: "light" | "dark";
+};
+
+// === Pure helpers so we can test logic ===
+export function calcUsedPctOfBudget(usedDailyRiskPct: number, maxDailyLossPct: number): number {
+  if (!isFinite(usedDailyRiskPct) || !isFinite(maxDailyLossPct) || maxDailyLossPct <= 0) return 0;
+  const pct = (usedDailyRiskPct / maxDailyLossPct) * 100;
+  return Math.min(100, Math.max(0, pct));
 }
 
-// --- Mock websocket util (replace with real URL) ---
-function usePrices(symbols: string[]) {
-  const [quotes, setQuotes] = useState<QuoteMap>({});
-  const wsRef = useRef<WebSocket | null>(null);
+function runDevTests() {
+  // Basic sanity tests for calcUsedPctOfBudget (DO NOT CHANGE EXISTING TESTS)
+  console.assert(calcUsedPctOfBudget(1.5, 3) === 50, "calcUsedPctOfBudget 1.5/3 should be 50%");
+  console.assert(calcUsedPctOfBudget(0, 3) === 0, "0 usage should be 0%");
+  console.assert(calcUsedPctOfBudget(10, 3) === 100, ">100% should clamp to 100%");
+  console.assert(calcUsedPctOfBudget(2, 0) === 0, "0 maxDailyLoss clamps to 0");
+  // Extra edge cases
+  console.assert(calcUsedPctOfBudget(-1, 3) === 0, "negative usage clamps to 0%");
+  // @ts-expect-error intentional NaN test
+  console.assert(calcUsedPctOfBudget(Number.NaN, 3) === 0, "NaN usage returns 0");
+  // Theme tests (non-fatal): ensure accessor returns boolean
+  const initial = getInitialDark();
+  console.assert(typeof initial === "boolean", "getInitialDark should return boolean");
+
+  // === Added tests ===
+  console.assert(calcUsedPctOfBudget(3, 3) === 100, "equal usage should be 100%");
+  console.assert(calcUsedPctOfBudget(300, 600) === 50, "proportional large numbers");
+  // @ts-expect-error Infinity guard
+  console.assert(calcUsedPctOfBudget(1.5, Number.POSITIVE_INFINITY) === 0, "Infinity max should return 0");
+  console.assert(calcUsedPctOfBudget(1.5, -3) === 0, "negative max clamps to 0");
+  const val = calcUsedPctOfBudget(0.75, 3);
+  console.assert(typeof val === "number" && Math.abs(val - 25) < 1e-9, "returns a number (25%)");
+}
+
+// === Mock data (to be replaced with Django endpoints) ===
+const MOCK_RISK: RiskPolicy = { maxRiskPerTradePct: 1, maxDailyLossPct: 3, maxTradesPerDay: 6 };
+const MOCK_OPEN_TRADES: Trade[] = [
+  { id: "t1", ticker: "AAPL", side: "LONG", entryPrice: 190.12, entryTime: new Date().toISOString(), stopLoss: 188.5, target: 194, riskR: 0.6, size: 100, notes: "Breakout over HOD", strategyTags: ["Breakout", "VWAP"], status: "OPEN" },
+  { id: "t2", ticker: "TSLA", side: "SHORT", entryPrice: 245.2, entryTime: new Date().toISOString(), stopLoss: 248.0, target: 238, riskR: 0.4, size: 50, notes: "Rejection at premarket high", strategyTags: ["Reversal"], status: "OPEN" },
+];
+const MOCK_TICKERS: Ticker[] = [
+  { symbol: "AAPL", last: 191.02, volume: 12_450_000, relVol: 1.8, changePct: 1.24 },
+  { symbol: "TSLA", last: 243.88, volume: 9_210_000, relVol: 2.3, changePct: -0.75 },
+  { symbol: "AMD", last: 128.44, volume: 6_100_000, relVol: 1.2, changePct: 0.42 },
+  // FIX: commas are illegal in numeric literals in JS/TS; use underscores for readability
+  { symbol: "NVDA", last: 906.55, volume: 15_300_000, relVol: 1.5, changePct: -2.11 },
+  { symbol: "SMCI", last: 645.11, volume: 2_400_000, relVol: 2.9, changePct: 3.34 },
+  { symbol: "META", last: 504.10, volume: 7_900_000, relVol: 0.9, changePct: -0.15 },
+];
+
+const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "Range", "News" ];
+
+// === Theme helpers & sync stubs ===
+const THEME_KEY = "theme"; // 'dark' | 'light'
+
+export function getInitialDark(): boolean {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    if (stored === "dark") return true;
+    if (stored === "light") return false;
+  } catch (_) {}
+  // fallback to system preference
+  if (typeof window !== "undefined" && window.matchMedia) {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+  return false;
+}
+
+function debounce<T extends (...args: any[]) => void>(fn: T, ms = 300) {
+  let t: any;
+  return (...args: Parameters<T>) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+async function syncThemeToServer(theme: "dark" | "light") {
+  // TODO: wire to Django user profile: POST /api/user/settings { theme }
+  return Promise.resolve();
+}
+const debouncedSyncTheme = debounce((theme: "dark" | "light") => { void syncThemeToServer(theme); }, 800);
+
+// === Mock auth + settings (to be replaced by Django REST API) ===
+async function mockLogin(email: string, password: string): Promise<User> {
+  // TODO: POST /api/auth/login { email, password }
+  return Promise.resolve({ id: "u1", email, twoFactorEnabled: true });
+}
+async function mockRegister(email: string, password: string): Promise<User> {
+  // TODO: POST /api/auth/register { email, password }
+  return Promise.resolve({ id: "u1", email, twoFactorEnabled: false });
+}
+async function mockFetchUserSettings(): Promise<UserSettings> {
+  // TODO: GET /api/user/settings
+  const stored = (typeof localStorage !== 'undefined' && localStorage.getItem(THEME_KEY)) as UserSettings["theme"] | null;
+  return Promise.resolve({ theme: stored === "dark" ? "dark" : "light" });
+}
+async function mockEnable2FA(): Promise<{ otpauthUrl: string }>{
+  // TODO: POST /api/auth/2fa/setup -> returns otpauth URL / QR secret
+  return Promise.resolve({ otpauthUrl: "otpauth://totp/Example:you@example.com?secret=ABC123&issuer=Example" });
+}
+async function mockVerify2FA(code: string): Promise<{ ok: boolean }>{
+  // TODO: POST /api/auth/2fa/verify { code }
+  return Promise.resolve({ ok: code.length === 6 });
+}
+
+// Root app component
+export default function TradingApp() {
+  const [page, setPage] = useState("dashboard");
+  const [risk, setRisk] = useState<RiskPolicy>(MOCK_RISK);
+  const [openTrades, setOpenTrades] = useState<Trade[]>(MOCK_OPEN_TRADES);
+  const [dark, setDark] = useState<boolean>(getInitialDark());
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Mock stats (replace with /api endpoints later)
+  const todaysPL = useMemo(() => 0.0, []);
+  const totalPL = useMemo(() => 0.0, []);
+  const totalEquity = useMemo(() => 0.0, []);
+
+  // Risk meter: assume current drawdown % (replace with backend calc of realized+open PnL vs day-start equity)
+  const usedDailyRiskPct = 1.5; // mock value
+  const usedPctOfBudget = calcUsedPctOfBudget(usedDailyRiskPct, risk.maxDailyLossPct);
+
+  // Session stats (mock; wire to /api/stats/session)
+  const sessionStats = {
+    trades: 3,
+    winRate: 66.7,
+    avgR: 0.42,
+    bestR: 2.1,
+    worstR: -0.8,
+    maxDD: -1.7,
+  };
 
   useEffect(() => {
-    if (!symbols.length) return;
-
-    // Close previous
-    if (wsRef.current) { wsRef.current.close(); }
-
-    // Placeholder echo server simulation (replace with real market data WS)
-    // const WS_URL = "wss://YOUR_PRICE_FEED/ws";
-    // wsRef.current = new WebSocket(WS_URL);
-    // wsRef.current.onopen = () => wsRef.current?.send(JSON.stringify({ type: "subscribe", symbols }));
-    // wsRef.current.onmessage = (ev) => { const msg = JSON.parse(ev.data); /* map into setQuotes */ };
-
-    // Demo timer to simulate ticks locally
-    let alive = true;
-    const base: QuoteMap = Object.fromEntries(symbols.map((s) => [s, { t: Date.now(), price: +(Math.random()*60 + 20).toFixed(2), volume: Math.floor(Math.random()*1_000_000) }]));
-    setQuotes(base);
-
-    const id = setInterval(() => {
-      if (!alive) return;
-      setQuotes((prev) => {
-        const next: QuoteMap = { ...prev };
-        for (const s of symbols) {
-          const p = (prev[s]?.price ?? base[s].price) * (1 + (Math.random() - 0.5) * 0.002);
-          next[s] = { t: Date.now(), price: +p.toFixed(3), volume: Math.floor((prev[s]?.volume ?? base[s].volume ?? 0) + Math.random()*5000) };
-        }
-        return next;
-      });
-    }, 1500);
-
-    return () => { alive = false; clearInterval(id); if (wsRef.current) wsRef.current.close(); };
-  }, [symbols.join(",")]);
-
-  return quotes;
-}
-
-// --- Main UI ---
-export default function TradingJournalApp() {
-  // THEME
-  const { theme, toggle } = useTheme();
-
-  // Watched tickers
-  const [newSymbol, setNewSymbol] = useState("");
-  const [tickers, setTickers] = useState<WatchedTicker[]>(() => {
-    try { return JSON.parse(localStorage.getItem(LS_KEYS.tickers) || "[]"); } catch { return []; }
-  });
-  useEffect(() => localStorage.setItem(LS_KEYS.tickers, JSON.stringify(tickers)), [tickers]);
-  const quotes = usePrices(tickers.map(t => t.symbol));
-
-  // Journal
-  const [journal, setJournal] = useState<JournalEntry[]>(() => {
-    try { return JSON.parse(localStorage.getItem(LS_KEYS.journal) || "[]"); } catch { return []; }
-  });
-  useEffect(() => localStorage.setItem(LS_KEYS.journal, JSON.stringify(journal)), [journal]);
-
-  // Risk policy
-  const [risk, setRisk] = useState<RiskPolicy>(() => {
+    const root = document.documentElement;
+    if (dark) root.classList.add("dark");
+    else root.classList.remove("dark");
     try {
-      return JSON.parse(localStorage.getItem(LS_KEYS.risk) || "null") || {
-        accountEquity: 25_000,
-        dayStartEquity: 25_000,
-        maxRiskPerTradePct: 2,
-        maxDailyLossPct: 4,
-        maxTradesPerDay: 6,
-        lockoutEnabled: true,
-      } as RiskPolicy;
-    } catch {
-      return { accountEquity: 25_000, dayStartEquity: 25_000, maxRiskPerTradePct: 2, maxDailyLossPct: 4, maxTradesPerDay: 6, lockoutEnabled: true };
-    }
-  });
-  useEffect(() => localStorage.setItem(LS_KEYS.risk, JSON.stringify(risk)), [risk]);
+      localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
+    } catch (_) {}
+    debouncedSyncTheme(dark ? "dark" : "light");
+  }, [dark]);
 
-  // Derived risk numbers
-  const dollarsPerTrade = useMemo(() => risk.accountEquity * (risk.maxRiskPerTradePct/100), [risk]);
-  const maxDailyLoss = useMemo(() => risk.dayStartEquity * (risk.maxDailyLossPct/100), [risk]);
+  useEffect(() => {
+    // run simple dev tests in the browser console
+    runDevTests();
+  }, []);
 
-  // Simple day rollup (for Calendar Dashboard)
-  const dailySummary = useMemo(() => computeDailySummary(journal), [journal]);
+  // On login, fetch server settings to reconcile theme
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      try {
+        const settings = await mockFetchUserSettings();
+        if (settings?.theme) {
+          const serverDark = settings.theme === "dark";
+          setDark(serverDark); // server takes precedence after login
+        }
+      } catch (_) {}
+    })();
+  }, [user]);
 
-  // Lockout logic example (frontend only; enforce on backend later)
-  const todays = useMemo(() => journal.filter(j => j.date === todayISO()), [journal]);
-  const todaysRealized = useMemo(() => todays.filter(j => !j.open && typeof j.exitPrice === "number").reduce((s,j)=> s + (j.exitPrice! - j.entryPrice) * (j.direction === "LONG" ? 1 : -1) * j.size, 0), [todays]);
-  const lockout = shouldLockout(todaysRealized, maxDailyLoss, risk.lockoutEnabled);
-
-  // --- Actions ---
-  const addSymbol = () => {
-    const s = newSymbol.trim().toUpperCase();
-    if (!s) return;
-    if (tickers.some(t => t.symbol === s)) return;
-    setTickers(prev => [...prev, { symbol: s }]);
-    setNewSymbol("");
-  };
-  const removeSymbol = (s: string) => setTickers(prev => prev.filter(t => t.symbol !== s));
-
-  const addJournal = (entry: Omit<JournalEntry, "id">) => {
-    if (lockout) return alert("Daily loss lockout active. New trades disabled.");
-    setJournal(prev => [{ id: crypto.randomUUID(), ...entry }, ...prev]);
-  };
-  const closeTrade = (id: string, exitPrice: number) => setJournal(prev => prev.map(j => j.id === id ? { ...j, open: false, exitPrice } : j));
-  const deleteEntry = (id: string) => setJournal(prev => prev.filter(j => j.id !== id));
-
-  const saveRisk = () => {
-    // In a real app, call your API; here it's persisted via localStorage by useEffect.
-  };
-
-  // --- Subcomponents ---
-  const StocksTab = (
-    <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-      <Card className="xl:col-span-1 shadow-sm">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-xl"><PlugZap className="w-5 h-5"/> Watchlist</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2">
-            <Input placeholder="Add symbol (e.g., AAPL)" value={newSymbol} onChange={e=>setNewSymbol(e.target.value)} onKeyDown={e => e.key==='Enter' && addSymbol()} />
-            <Button onClick={addSymbol} className="shrink-0"><Plus className="w-4 h-4 mr-1"/>Add</Button>
-          </div>
-          <div className="space-y-2 max-h-[50vh] overflow-auto pr-1">
-            {tickers.length === 0 && (
-              <div className="text-sm text-muted-foreground">No symbols yet. Add one to start streaming prices.</div>
-            )}
-            {tickers.map((t) => (
-              <div key={t.symbol} className="flex items-center justify-between rounded-2xl border p-3">
-                <div>
-                  <div className="font-semibold tracking-wide">{t.symbol}</div>
-                  <div className="text-xs text-muted-foreground">{new Date(quotes[t.symbol]?.t || Date.now()).toLocaleTimeString()} • Vol {quotes[t.symbol]?.volume?.toLocaleString?.() || "—"}</div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="text-right">
-                    <div className="text-lg font-bold tabular-nums">{quotes[t.symbol]?.price?.toFixed?.(3) ?? "—"}</div>
-                    <div className="text-xs text-muted-foreground">last</div>
-                  </div>
-                  <Button variant="ghost" size="icon" onClick={() => removeSymbol(t.symbol)}><Trash2 className="w-4 h-4"/></Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="xl:col-span-2 shadow-sm">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-xl"><TrendingUp className="w-5 h-5"/> Realtime Ticker Tape</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {Object.keys(quotes).length === 0 && (
-              <div className="text-sm text-muted-foreground">Add tickers to see realtime updates.</div>
-            )}
-            {Object.entries(quotes).map(([sym, q]) => (
-              <div key={sym} className="rounded-2xl border p-3 flex items-center justify-between">
-                <div className="font-semibold">{sym}</div>
-                <div className="text-right">
-                  <div className="text-lg font-bold tabular-nums">{q.price.toFixed(3)}</div>
-                  <div className="text-[11px] text-muted-foreground">{new Date(q.t).toLocaleTimeString()}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-
-  const CalendarTab = (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <Card className="lg:col-span-2 shadow-sm">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-xl"><CalendarIcon className="w-5 h-5"/> Calendar (Monthly)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <MonthlyCalendar realizedMap={dailySummary} />
-        </CardContent>
-      </Card>
-      <Card className="shadow-sm">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-xl"><Activity className="w-5 h-5"/> Day Summary</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <div className="flex items-center justify-between"><span className="text-muted-foreground text-sm">Date</span><span>{todayISO()}</span></div>
-          <div className={`flex items-center justify-between ${todaysRealized>=0?"text-emerald-600":"text-rose-600"}`}>
-            <span className="text-muted-foreground text-sm">Realized P&L</span>
-            <span className="font-semibold">{formatCurrency(todaysRealized)}</span>
-          </div>
-          <div className="flex items-center justify-between"><span className="text-muted-foreground text-sm">Trades</span><span className="font-medium">{todays.length}</span></div>
-          <div className="flex items-center justify-between"><span className="text-muted-foreground text-sm">Lockout</span><span className="font-medium">{lockout? "ON" : "OFF"}</span></div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-
-  const JournalTab = (
-    <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-      {/* Open Trades */}
-      <Card className="shadow-sm xl:col-span-1">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-xl"><NotebookPen className="w-5 h-5"/> New / Open Trade</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <NewTradeForm
-            symbols={tickers.map(t=>t.symbol)}
-            onSubmit={(payload) => addJournal({ ...payload, open: true })}
-            disabled={lockout}
-          />
-          {lockout && (
-            <div className="text-xs text-rose-600">Daily loss lockout is active. Disable in Risk tab if needed (not recommended).</div>
-          )}
-
-          <div className="mt-4 space-y-2">
-            <h3 className="text-sm font-semibold">Currently Open</h3>
-            {journal.filter(j=>j.open).length===0 && <div className="text-sm text-muted-foreground">No open trades.</div>}
-            {journal.filter(j=>j.open).map(j => (
-              <div key={j.id} className="border rounded-2xl p-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold">{j.symbol} • {j.direction}</div>
-                    <div className="text-xs text-muted-foreground">{j.size} @ {j.entryPrice}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Input type="number" className="w-28" placeholder="Exit price" onKeyDown={(e:any)=>{
-                      if(e.key==='Enter') { const v = parseFloat(e.currentTarget.value); if(!isNaN(v)) closeTrade(j.id, v); e.currentTarget.value=''; }
-                    }} />
-                    <Button variant="secondary" onClick={()=>{
-                      const v = prompt("Exit price?"); if(!v) return; const n = parseFloat(v); if(!isNaN(n)) closeTrade(j.id, n);
-                    }}>Close</Button>
-                  </div>
-                </div>
-                {j.images?.length>0 && (
-                  <div className="mt-2 grid grid-cols-3 gap-2">
-                    {j.images.map((src,idx)=>(<img key={idx} src={src} className="rounded-xl object-cover aspect-video"/>))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Closed / Past */}
-      <Card className="shadow-sm xl:col-span-2">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-xl"><NotebookPen className="w-5 h-5"/> Closed & Past Trades</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid md:grid-cols-2 gap-3">
-            {journal.filter(j=>!j.open).length===0 && <div className="text-sm text-muted-foreground">No closed trades yet.</div>}
-            {journal.filter(j=>!j.open).map(j => (
-              <div key={j.id} className="border rounded-2xl p-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold">{j.date} • {j.symbol} • {j.direction}</div>
-                    <div className="text-xs text-muted-foreground">{j.size} @ {j.entryPrice} → {j.exitPrice}</div>
-                    <div className={`text-sm font-medium ${(((j.exitPrice??0)-j.entryPrice)*(j.direction==='LONG'?1:-1)*j.size) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                      P&L: {formatCurrency(((j.exitPrice??0)-j.entryPrice)*(j.direction==='LONG'?1:-1)*j.size)}
-                    </div>
-                  </div>
-                  <Button variant="ghost" size="icon" onClick={()=>deleteEntry(j.id)}><Trash2 className="w-4 h-4"/></Button>
-                </div>
-                {j.tags?.length>0 && (
-                  <div className="mt-2 text-xs text-muted-foreground">Tags: {j.tags.join(", ")}</div>
-                )}
-                {j.notes && <div className="mt-2 text-sm">{j.notes}</div>}
-                {j.images?.length>0 && (
-                  <div className="mt-3 grid grid-cols-3 gap-2">
-                    {j.images.map((src,idx)=>(<img key={idx} src={src} className="rounded-xl object-cover aspect-video"/>))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-
-  const RiskTab = (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <Card className="lg:col-span-2 shadow-sm">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-xl"><ShieldCheck className="w-5 h-5"/> Risk Management</CardTitle>
-        </CardHeader>
-        <CardContent className="grid md:grid-cols-2 gap-4">
-          <div className="space-y-3">
-            <div>
-              <Label>Account Equity</Label>
-              <Input type="number" value={risk.accountEquity} onChange={e=>setRisk({...risk, accountEquity: +e.target.value})} />
-            </div>
-            <div>
-              <Label>Day-Start Equity</Label>
-              <Input type="number" value={risk.dayStartEquity} onChange={e=>setRisk({...risk, dayStartEquity: +e.target.value})} />
-            </div>
-            <div>
-              <Label>Max Risk per Trade (%)</Label>
-              <Input type="number" step="0.1" value={risk.maxRiskPerTradePct} onChange={e=>setRisk({...risk, maxRiskPerTradePct: +e.target.value})} />
-            </div>
-            <div>
-              <Label>Max Daily Loss (%)</Label>
-              <Input type="number" step="0.1" value={risk.maxDailyLossPct} onChange={e=>setRisk({...risk, maxDailyLossPct: +e.target.value})} />
-            </div>
-            <div>
-              <Label>Max Trades per Day</Label>
-              <Input type="number" value={risk.maxTradesPerDay} onChange={e=>setRisk({...risk, maxTradesPerDay: +e.target.value})} />
-            </div>
-            <div className="flex items-center justify-between rounded-2xl border p-3">
-              <div>
-                <div className="font-medium">Daily Loss Lockout</div>
-                <div className="text-xs text-muted-foreground">Disable new trades when realized loss exceeds threshold</div>
-              </div>
-              <Switch checked={risk.lockoutEnabled} onCheckedChange={(v)=>setRisk({...risk, lockoutEnabled: v})} />
-            </div>
-            <div className="pt-1">
-              <Button onClick={saveRisk}><Save className="w-4 h-4 mr-2"/>Save Policy</Button>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            <div className="rounded-2xl border p-4">
-              <div className="text-sm text-muted-foreground">Guidance</div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
-                <div className="rounded-xl border p-3">
-                  <div className="text-xs text-muted-foreground">Risk per trade</div>
-                  <div className="text-lg font-semibold tabular-nums">{formatCurrency(dollarsPerTrade)}</div>
-                </div>
-                <div className="rounded-xl border p-3">
-                  <div className="text-xs text-muted-foreground">Max daily loss</div>
-                  <div className="text-lg font-semibold tabular-nums">{formatCurrency(maxDailyLoss)}</div>
-                </div>
-                <div className={`rounded-xl border p-3 ${lockout? 'bg-rose-50 dark:bg-rose-950/20':''}`}>
-                  <div className="text-xs text-muted-foreground">Lockout status (today)</div>
-                  <div className="text-lg font-semibold">{lockout? 'LOCKED' : 'UNLOCKED'}</div>
-                </div>
-                <div className="rounded-xl border p-3">
-                  <div className="text-xs text-muted-foreground">Today realized P&L</div>
-                  <div className={`text-lg font-semibold tabular-nums ${todaysRealized>=0?"text-emerald-600":"text-rose-600"}`}>{formatCurrency(todaysRealized)}</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border p-4">
-              <div className="text-sm font-semibold mb-2">Position Sizing Helper</div>
-              <PositionSizer dollarsRisk={dollarsPerTrade} quotes={quotes} />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="shadow-sm">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-xl"><Settings className="w-5 h-5"/> Preferences</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
+  // === DASHBOARD WIDGETS ===
+  const RiskSummary = () => (
+    <Card>
+      <CardContent className="p-4">
+        <h2 className="font-bold mb-2">Risk settings & status</h2>
+        <div className="grid grid-cols-3 gap-4 text-sm">
           <div>
-            <Label>Default Direction</Label>
-            <Select defaultValue="LONG">
-              <SelectTrigger className="mt-1"><SelectValue placeholder="Select"/></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="LONG">LONG</SelectItem>
-                <SelectItem value="SHORT">SHORT</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="text-muted-foreground">Max risk / trade</div>
+            <div className="font-medium">{risk.maxRiskPerTradePct}%</div>
           </div>
           <div>
-            <Label>Default Size (shares)</Label>
-            <Input type="number" placeholder="e.g., 100" />
+            <div className="text-muted-foreground">Max loss / day</div>
+            <div className="font-medium">{risk.maxDailyLossPct}%</div>
           </div>
-          <div className="text-xs text-muted-foreground">All data is managed via this UI; no /admin usage is required.</div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-
-  return (
-    <div className={theme === "dark" ? "dark" : ""}>
-      <div className="min-h-screen bg-background text-foreground p-4 md:p-6">
-        {/* Top Nav */}
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-2xl bg-primary/10 grid place-items-center font-bold">TJ</div>
-            <div>
-              <div className="font-semibold leading-tight">Trading Journal</div>
-              <div className="text-xs text-muted-foreground">Smooth React + Tailwind UI</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <ThemeToggleButton theme={theme} onToggle={toggle} />
-            <Button variant="secondary" size="sm">Login</Button>
+          <div>
+            <div className="text-muted-foreground">Max trades / day</div>
+            <div className="font-medium">{risk.maxTradesPerDay}</div>
           </div>
         </div>
-
-        <Tabs defaultValue="stocks" className="">
-          <TabsList className="grid grid-cols-4 rounded-2xl">
-            <TabsTrigger value="stocks" className="flex items-center gap-2"><TrendingUp className="w-4 h-4"/> Stocks</TabsTrigger>
-            <TabsTrigger value="calendar" className="flex items-center gap-2"><CalendarIcon className="w-4 h-4"/> Dashboard</TabsTrigger>
-            <TabsTrigger value="journal" className="flex items-center gap-2"><NotebookPen className="w-4 h-4"/> Journal</TabsTrigger>
-            <TabsTrigger value="risk" className="flex items-center gap-2"><ShieldCheck className="w-4 h-4"/> Risk</TabsTrigger>
-          </TabsList>
-
-          <div className="mt-4 space-y-6">
-            <TabsContent value="stocks">{StocksTab}</TabsContent>
-            <TabsContent value="calendar">{CalendarTab}</TabsContent>
-            <TabsContent value="journal">{JournalTab}</TabsContent>
-            <TabsContent value="risk">{RiskTab}</TabsContent>
+        <div className="mt-4">
+          <div className="flex justify-between text-xs mb-1">
+            <span className="text-muted-foreground">Daily risk used</span>
+            <span className="font-medium">{usedDailyRiskPct.toFixed(2)}% / {risk.maxDailyLossPct}%</span>
           </div>
-        </Tabs>
-
-        {SHOW_DEV_TESTS && <DevTests />}
-
-        <footer className="mt-8 text-xs text-muted-foreground text-center">© {new Date().getFullYear()} Your Project • All data managed via GUI</footer>
-      </div>
-    </div>
-  );
-}
-
-// --- Monthly Calendar (simple inline implementation) ---
-function MonthlyCalendar({ realizedMap }: { realizedMap: Record<string, { realized: number; trades: number }> }) {
-  const d = new Date();
-  const first = new Date(d.getFullYear(), d.getMonth(), 1);
-  const last = new Date(d.getFullYear(), d.getMonth()+1, 0);
-  const startIdx = (first.getDay() + 6) % 7; // Monday=0
-  const days = last.getDate();
-
-  const cells = Array.from({ length: startIdx + days }, (_ , i) => {
-    const day = i - startIdx + 1;
-    const valid = day >= 1 && day <= days;
-    const iso = valid ? new Date(d.getFullYear(), d.getMonth(), day).toISOString().slice(0,10) : "";
-    const item = valid ? realizedMap[iso] : undefined;
-    return { valid, day, iso, item };
-  });
-
-  return (
-    <div className="rounded-2xl border overflow-hidden">
-      <div className="grid grid-cols-7 bg-muted/50 text-xs">
-        {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map((w) => (
-          <div key={w} className="p-2 text-center font-medium">{w}</div>
-        ))}
-      </div>
-      <div className="grid grid-cols-7">
-        {cells.map((c, idx) => (
-          <div key={idx} className={`min-h-[90px] border-t p-2 ${c.valid?"bg-background":"bg-muted/20"}`}>
-            {c.valid && (
-              <div>
-                <div className="text-xs text-muted-foreground">{c.day}</div>
-                {c.item ? (
-                  <div className={`mt-1 text-sm font-medium ${c.item.realized>=0?"text-emerald-600":"text-rose-600"}`}>
-                    {c.item.realized>=0?"+":""}{Math.round(c.item.realized)} • {c.item.trades} tr
-                  </div>
-                ) : (
-                  <div className="mt-1 text-xs text-muted-foreground">—</div>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// --- New Trade Form ---
-function NewTradeForm({ symbols, onSubmit, disabled }:{ symbols: string[]; onSubmit: (entry: Omit<JournalEntry, "id"|"open">) => void; disabled?: boolean }){
-  const hasSymbols = symbols.length > 0;
-  const [symbol, setSymbol] = useState(hasSymbols ? symbols[0] : "");
-  const [direction, setDirection] = useState<"LONG"|"SHORT">("LONG");
-  const [size, setSize] = useState(100);
-  const [entry, setEntry] = useState<number | "">("");
-  const [tags, setTags] = useState<string>("");
-  const [notes, setNotes] = useState("");
-  const [images, setImages] = useState<string[]>([]);
-
-  // When symbols list changes, pick the first symbol if current one isn't available
-  useEffect(()=>{
-    if (!symbols.includes(symbol)) {
-      setSymbol(symbols[0] ?? "");
-    }
-  }, [symbols.join(",")]);
-
-  const handleUpload = async (files: FileList | null) => {
-    if (!files) return;
-    const arr: string[] = [];
-    for (const f of Array.from(files)) {
-      const data = await f.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(data)));
-      arr.push(`data:${f.type};base64,${base64}`);
-    }
-    setImages(prev => [...prev, ...arr]);
-  };
-
-  const canSubmit = !!symbol && !!size && entry !== "";
-
-  const submit = () => {
-    if (!canSubmit) return;
-    onSubmit({ date: todayISO(), symbol, direction, size, entryPrice: Number(entry), tags: tags.split(",").map(s=>s.trim()).filter(Boolean), notes, images });
-    setNotes(""); setImages([]); setTags(""); setEntry("");
-  };
-
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <Label>Symbol</Label>
-          <Select value={symbol} onValueChange={setSymbol} disabled={!hasSymbols}>
-            <SelectTrigger className="mt-1"><SelectValue placeholder="Add a symbol in Stocks"/></SelectTrigger>
-            <SelectContent>
-              {symbols.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          {!hasSymbols && <div className="text-[11px] text-muted-foreground mt-1">No symbols yet. Add one in the Stocks tab.</div>}
+          <Progress value={usedPctOfBudget} />
         </div>
-        <div>
-          <Label>Direction</Label>
-          <Select value={direction} onValueChange={(v)=>setDirection(v as any)}>
-            <SelectTrigger className="mt-1"><SelectValue/></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="LONG">LONG</SelectItem>
-              <SelectItem value="SHORT">SHORT</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div>
-          <Label>Size (shares)</Label>
-          <Input type="number" value={size} onChange={e=>setSize(+e.target.value)} />
-        </div>
-        <div>
-          <Label>Entry price</Label>
-          <Input type="number" value={entry} onChange={e=>setEntry(e.target.value === '' ? '' : +e.target.value)} />
-        </div>
-        <div className="col-span-2">
-          <Label>Tags (comma separated)</Label>
-          <Input placeholder="e.g., momentum, vwap, breakout" value={tags} onChange={e=>setTags(e.target.value)} />
-        </div>
-        <div className="col-span-2">
-          <Label>Notes</Label>
-          <Textarea placeholder="What’s the setup?" value={notes} onChange={e=>setNotes(e.target.value)} />
-        </div>
-        <div className="col-span-2">
-          <Label className="flex items-center gap-2"><Upload className="w-4 h-4"/> Upload screenshots</Label>
-          <Input type="file" accept="image/*" multiple onChange={(e)=>handleUpload(e.target.files)} />
-          {images.length>0 && (
-            <div className="mt-2 grid grid-cols-3 gap-2">
-              {images.map((src, idx)=> (<img key={idx} src={src} className="rounded-xl object-cover aspect-video"/>))}
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="flex justify-end">
-        <Button disabled={disabled || !canSubmit} onClick={submit}>{disabled? 'Locked' : 'Add Open Trade'}</Button>
-      </div>
-    </div>
-  );
-}
-
-// --- Position Sizer ---
-function PositionSizer({ dollarsRisk, quotes }:{ dollarsRisk: number; quotes: QuoteMap }){
-  const symbols = Object.keys(quotes);
-  const hasQuotes = symbols.length > 0;
-  const [symbol, setSymbol] = useState<string>(hasQuotes ? symbols[0] : "");
-  const [entry, setEntry] = useState<number | "">("");
-  const [stop, setStop] = useState<number | "">("");
-
-  useEffect(()=>{ if (!symbols.includes(symbol)) setSymbol(symbols[0] ?? ""); }, [symbols.join(",")]);
-
-  const perShareRisk = useMemo(() => (entry !== "" && stop !== "") ? Math.max(0, Number(entry) - Number(stop)) : 0, [entry, stop]);
-  const shares = useMemo(() => positionSize(dollarsRisk, entry === "" ? undefined : Number(entry), stop === "" ? undefined : Number(stop)), [perShareRisk, dollarsRisk, entry, stop]);
-
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <Label>Symbol</Label>
-          <Select value={symbol} onValueChange={setSymbol} disabled={!hasQuotes}>
-            <SelectTrigger className="mt-1"><SelectValue placeholder="Add symbols to see quotes"/></SelectTrigger>
-            <SelectContent>
-              {symbols.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          {!hasQuotes && <div className="text-[11px] text-muted-foreground mt-1">No quotes available yet.</div>}
-        </div>
-        <div>
-          <Label>Live Price</Label>
-          <div className="mt-2 text-lg font-semibold tabular-nums">{symbol? quotes[symbol]?.price?.toFixed(3) ?? '—' : '—'}</div>
-        </div>
-        <div>
-          <Label>Entry</Label>
-          <Input type="number" value={entry} onChange={e=>setEntry(e.target.value===''? '' : +e.target.value)} />
-        </div>
-        <div>
-          <Label>Stop</Label>
-          <Input type="number" value={stop} onChange={e=>setStop(e.target.value===''? '' : +e.target.value)} />
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        <div className="rounded-2xl border p-3">
-          <div className="text-xs text-muted-foreground">Risk budget</div>
-          <div className="text-lg font-semibold tabular-nums">{formatCurrency(dollarsRisk)}</div>
-        </div>
-        <div className="rounded-2xl border p-3">
-          <div className="text-xs text-muted-foreground">Per-share risk</div>
-          <div className="text-lg font-semibold tabular-nums">{perShareRisk.toFixed(2)}</div>
-        </div>
-        <div className="rounded-2xl border p-3 col-span-2">
-          <div className="text-xs text-muted-foreground">Suggested position size</div>
-          <div className="text-2xl font-bold tabular-nums">{shares} shares</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// --- Dev Tests (render only when SHOW_DEV_TESTS=true) ---
-function DevTests() {
-  // Test 1: position sizing
-  const sizeA = positionSize(500, 10, 9); // $1 risk → 500 shares
-  const sizeB = positionSize(400, 20, 19.5); // $0.5 risk → 800 shares
-  const sizeZero = positionSize(500, 10, 10); // 0 risk → 0 shares
-  const sizeNeg = positionSize(500, 9, 10); // negative risk → 0 shares
-
-  // Test 2: daily summary
-  const sample: JournalEntry[] = [
-    { id: "1", date: "2025-01-01", symbol: "AAA", direction: "LONG", size: 100, entryPrice: 10, exitPrice: 11, open: false, tags: [], images: [] },
-    { id: "2", date: "2025-01-01", symbol: "BBB", direction: "SHORT", size: 50, entryPrice: 20, exitPrice: 22, open: false, tags: [], images: [] },
-    { id: "3", date: "2025-01-02", symbol: "CCC", direction: "LONG", size: 10, entryPrice: 5, open: true, tags: [], images: [] },
-  ];
-  const sum = computeDailySummary(sample);
-  const jan1 = sum["2025-01-01"]; // (11-10)*100 + (22-20)*(-1)*50 = 100 - 100 = 0
-  const jan2 = sum["2025-01-02"]; // open → 0 realized
-
-  // Test 3: lockout
-  const lockTrue = shouldLockout(-100, 50, true) === true;
-  const lockFalse = shouldLockout(-30, 50, true) === false;
-  const lockDisabled = shouldLockout(-100, 50, false) === false; // disabled must never lock
-
-  // Expectations
-  const tests = [
-    { name: "positionSize basic A", pass: sizeA === 500, detail: `got ${sizeA}` },
-    { name: "positionSize basic B", pass: sizeB === 800, detail: `got ${sizeB}` },
-    { name: "positionSize zero risk", pass: sizeZero === 0, detail: `got ${sizeZero}` },
-    { name: "positionSize negative risk", pass: sizeNeg === 0, detail: `got ${sizeNeg}` },
-    { name: "dailySummary Jan 1 realized", pass: jan1?.realized === 0, detail: `got ${jan1?.realized}` },
-    { name: "dailySummary Jan 1 trades", pass: jan1?.trades === 2, detail: `got ${jan1?.trades}` },
-    { name: "dailySummary Jan 2 realized", pass: (jan2?.realized ?? 0) === 0, detail: `got ${jan2?.realized}` },
-    { name: "lockout true when loss exceeds", pass: lockTrue, detail: "expected true" },
-    { name: "lockout false when below threshold", pass: lockFalse, detail: "expected false" },
-    { name: "lockout disabled ignores loss", pass: lockDisabled, detail: "expected false" },
-  ];
-
-  const allPass = tests.every(t => t.pass);
-
-  return (
-    <Card className="mt-6">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-lg"><Bug className="w-5 h-5"/> Dev Tests</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-sm mb-3">Self-checks to guard against regressions (toggle via SHOW_DEV_TESTS).</div>
-        <ul className="space-y-2">
-          {tests.map((t, i) => (
-            <li key={i} className={`flex items-center justify-between rounded-xl border p-2 ${t.pass? 'bg-emerald-50 dark:bg-emerald-950/10' : 'bg-rose-50 dark:bg-rose-950/10'}`}>
-              <span>{t.name}</span>
-              <span className={`text-xs font-medium ${t.pass? 'text-emerald-700' : 'text-rose-700'}`}>{t.pass? 'PASS' : 'FAIL'} — {t.detail}</span>
-            </li>
-          ))}
-        </ul>
-        <div className={`mt-3 text-sm font-medium ${allPass? 'text-emerald-700' : 'text-rose-700'}`}>Overall: {allPass? 'ALL PASS' : 'HAS FAILURES'}</div>
+        <p className="mt-3 text-xs text-muted-foreground">Will sync with <code>/api/risk-policy</code> and <code>/api/pnl/daily</code>.</p>
       </CardContent>
     </Card>
+  );
+
+  const AccountSummary = () => (
+    <Card>
+      <CardContent className="p-4">
+        <h2 className="font-bold mb-2">Account Summary</h2>
+        <ul className="grid grid-cols-3 gap-4 text-sm">
+          <li>
+            <div className="text-muted-foreground">P/L (today)</div>
+            <div className="font-semibold">{todaysPL.toFixed(2)}</div>
+          </li>
+          <li>
+            <div className="text-muted-foreground">P/L (total)</div>
+            <div className="font-semibold">{totalPL.toFixed(2)}</div>
+          </li>
+          <li>
+            <div className="text-muted-foreground">Total equity</div>
+            <div className="font-semibold">{totalEquity.toFixed(2)}</div>
+          </li>
+        </ul>
+        <p className="mt-3 text-xs text-muted-foreground">Endpoints: <code>/api/pnl/daily</code>, <code>/api/pnl/total</code>, <code>/api/equity</code>.</p>
+      </CardContent>
+    </Card>
+  );
+
+  const SessionStats = () => (
+    <Card>
+      <CardContent className="p-4">
+        <h2 className="font-bold mb-2">Session Stats</h2>
+        <div className="grid grid-cols-3 lg:grid-cols-6 gap-4 text-sm">
+          <Stat label="Trades" value={sessionStats.trades} />
+          <Stat label="Win rate" value={`${sessionStats.winRate.toFixed(1)}%`} />
+          <Stat label="Avg R" value={sessionStats.avgR.toFixed(2)} />
+          <Stat label="Best R" value={sessionStats.bestR.toFixed(2)} />
+          <Stat label="Worst R" value={sessionStats.worstR.toFixed(2)} />
+          <Stat label="Max DD" value={`${sessionStats.maxDD.toFixed(2)}%`} />
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">Endpoint: <code>/api/stats/session</code>.</p>
+      </CardContent>
+    </Card>
+  );
+
+  const OpenTrades = () => (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="font-bold">Open Trades</h2>
+          <Button variant="outline" size="sm">New trade</Button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-left">
+              <tr className="border-b">
+                <th className="py-2 pr-2">Ticker</th>
+                <th className="py-2 pr-2">Side</th>
+                <th className="py-2 pr-2">Entry</th>
+                <th className="py-2 pr-2">Stop</th>
+                <th className="py-2 pr-2">Target</th>
+                <th className="py-2 pr-2">Size</th>
+                <th className="py-2 pr-2">Risk (R)</th>
+                <th className="py-2 pr-2">Strategy</th>
+                <th className="py-2 pr-2">Notes</th>
+                <th className="py-2 pr-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {openTrades.map((t) => (
+                <tr key={t.id} className="border-b last:border-none align-top">
+                  <td className="py-2 pr-2 font-medium">{t.ticker}</td>
+                  <td className="py-2 pr-2">{t.side}</td>
+                  <td className="py-2 pr-2">{t.entryPrice.toFixed(2)}</td>
+                  <td className="py-2 pr-2">{t.stopLoss?.toFixed(2) ?? "-"}</td>
+                  <td className="py-2 pr-2">{t.target?.toFixed(2) ?? "-"}</td>
+                  <td className="py-2 pr-2">{t.size ?? "-"}</td>
+                  <td className="py-2 pr-2">{t.riskR?.toFixed(2) ?? "-"}</td>
+                  <td className="py-2 pr-2 max-w-[200px]">
+                    <div className="flex flex-wrap gap-1">
+                      {(t.strategyTags ?? []).map((tag) => (
+                        <Badge key={tag} variant="secondary" className="rounded-full">{tag}</Badge>
+                      ))}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {STRATEGY_TAGS.map((tag) => (
+                        <Button key={tag} size="sm" variant="outline" onClick={() => toggleTag(t.id, tag)}>
+                          {t.strategyTags?.includes(tag) ? `− ${tag}` : `+ ${tag}`}
+                        </Button>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="py-2 pr-2 max-w-[240px]">
+                    <Textarea defaultValue={t.notes ?? ""} className="h-16" />
+                  </td>
+                  <td className="py-2 pr-2 space-y-2">
+                    <Button size="sm" variant="outline">Close</Button>
+                    <div>
+                      <label className="text-xs">Screenshot</label>
+                      <Input type="file" accept="image/*" className="mt-1" />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">On close, move to journal. Endpoints: <code>/api/trades</code>, <code>/api/trades/:id</code>.</p>
+      </CardContent>
+    </Card>
+  );
+
+  const Calendar = () => (
+    <Card>
+      <CardContent className="p-4">
+        <h2 className="font-bold mb-2">Calendar</h2>
+        <p className="text-sm text-muted-foreground">Summary of each day – clickable to see trades (placeholder grid).</p>
+        <div className="grid grid-cols-7 gap-2 mt-4">
+          {Array.from({ length: 28 }).map((_, i) => (
+            <div key={i} className="border rounded-xl h-20 flex items-center justify-center text-xs hover:bg-muted cursor-pointer">{i + 1}</div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+
+  // === STOCKS ===
+  const Stocks = () => (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="font-bold">Watchlist</h2>
+            <div className="flex gap-2">
+              <Input placeholder="Add symbol (e.g. NVDA)" className="w-40" />
+              <Button>Add</Button>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-left">
+                <tr className="border-b">
+                  <th className="py-2 pr-2">Symbol</th>
+                  <th className="py-2 pr-2">Last</th>
+                  <th className="py-2 pr-2">Volume</th>
+                  <th className="py-2 pr-2">Rel Vol</th>
+                  <th className="py-2 pr-2">Change%</th>
+                  <th className="py-2 pr-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {MOCK_TICKERS.map((t) => (
+                  <tr key={t.symbol} className="border-b last:border-none">
+                    <td className="py-2 pr-2 font-medium">{t.symbol}</td>
+                    <td className="py-2 pr-2">{t.last.toFixed(2)}</td>
+                    <td className="py-2 pr-2">{t.volume.toLocaleString()}</td>
+                    <td className="py-2 pr-2">{t.relVol?.toFixed(2)}</td>
+                    <td className={`py-2 pr-2 ${t.changePct && t.changePct >= 0 ? "text-emerald-600" : "text-red-600"}`}>{t.changePct?.toFixed(2)}%</td>
+                    <td className="py-2 pr-2 space-x-2">
+                      <Button size="sm" variant="outline">Chart</Button>
+                      <Button size="sm" variant="outline">Track</Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="p-4">
+          <h2 className="font-bold mb-2">Market Heatmap (mock)</h2>
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+            {MOCK_TICKERS.map((t) => (
+              <div key={t.symbol} className={`rounded-xl p-3 text-xs text-center border hover:shadow transition ${t.changePct && t.changePct >= 0 ? "bg-emerald-50 dark:bg-emerald-900/20" : "bg-red-50 dark:bg-red-900/20"}`}>
+                <div className="font-semibold">{t.symbol}</div>
+                <div>{t.changePct?.toFixed(2)}%</div>
+                <div className="opacity-70">RVOL {t.relVol?.toFixed(1)}</div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">Later replace with real-time heatmap powered by <code>/api/market/movers</code>.</p>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="p-4">
+          <h2 className="font-bold mb-2">Realtime Chart (placeholder)</h2>
+          <div className="h-64 w-full border rounded-xl flex items-center justify-center text-sm text-muted-foreground">Embed chart library here (e.g., Recharts) and drive via WebSocket <code>/ws/prices</code>.</div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  // === RISK SETTINGS ===
+  const RiskSettings = () => (
+    <Card>
+      <CardContent className="p-4 space-y-4">
+        <h2 className="font-bold">Risk Settings</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">Max risk per trade (%)</div>
+            <Input type="number" step="0.1" value={risk.maxRiskPerTradePct} onChange={(e) => setRisk({ ...risk, maxRiskPerTradePct: Number(e.target.value) })} />
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">Max daily loss (%)</div>
+            <Input type="number" step="0.1" value={risk.maxDailyLossPct} onChange={(e) => setRisk({ ...risk, maxDailyLossPct: Number(e.target.value) })} />
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">Max trades per day</div>
+            <Input type="number" value={risk.maxTradesPerDay} onChange={(e) => setRisk({ ...risk, maxTradesPerDay: Number(e.target.value) })} />
+          </div>
+        </div>
+        <div className="text-sm text-muted-foreground">Will POST to <code>/api/risk-policy</code>.</div>
+      </CardContent>
+    </Card>
+  );
+
+  // === JOURNAL ===
+  const Journal = () => (
+    <Card>
+      <CardContent className="p-4 space-y-4">
+        <h2 className="font-bold">Trading Journal</h2>
+        <div className="border rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm text-muted-foreground">Closed entries listed newest first. Click for details.</div>
+            <div className="text-xs text-muted-foreground">Endpoints: <code>/api/trades?status=CLOSED</code>, <code>/api/uploads</code></div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Placeholder journal cards */}
+            {[1,2,3].map((i) => (
+              <div key={i} className="border rounded-xl p-3">
+                <div className="flex items-center justify-between">
+                  <div className="font-semibold">AAPL · LONG</div>
+                  <div className="text-xs">+1.4R</div>
+                </div>
+                <div className="text-xs text-muted-foreground">2025-09-23 10:12</div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {["Breakout","VWAP"].map((t) => <Badge key={t} variant="secondary" className="rounded-full">{t}</Badge>)}
+                </div>
+                <div className="mt-2 text-sm">Notes: nice volume expansion after reclaim.</div>
+                <div className="mt-2">
+                  <label className="text-xs">Upload screenshot</label>
+                  <Input type="file" accept="image/*" className="mt-1" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+
+  function Stat({ label, value }: { label: string; value: string | number }) {
+    return (
+      <div>
+        <div className="text-xs text-muted-foreground">{label}</div>
+        <div className="text-base font-semibold">{value}</div>
+      </div>
+    );
+  }
+
+  function toggleTag(tradeId: string, tag: string) {
+    setOpenTrades((prev) => prev.map((t) => t.id === tradeId ? {
+      ...t,
+      strategyTags: t.strategyTags?.includes(tag)
+        ? (t.strategyTags || []).filter((x) => x !== tag)
+        : [ ...(t.strategyTags || []), tag ],
+    } : t));
+  }
+
+  // === Auth Landing (User Settings as landing when not logged in) ===
+  function UnauthedLanding() {
+    const [email, setEmail] = useState("");
+    const [password, setPassword] = useState("");
+    const [otpCode, setOtpCode] = useState("");
+    const [otpauthUrl, setOtpauthUrl] = useState<string | null>(null);
+
+    const doLogin = async () => {
+      setAuthError(null); setAuthLoading(true);
+      try {
+        const u = await mockLogin(email, password);
+        setUser(u);
+      } catch (e: any) {
+        setAuthError("Login failed");
+      } finally { setAuthLoading(false); }
+    };
+    const doRegister = async () => {
+      setAuthError(null); setAuthLoading(true);
+      try {
+        const u = await mockRegister(email, password);
+        setUser(u);
+      } catch (e: any) {
+        setAuthError("Register failed");
+      } finally { setAuthLoading(false); }
+    };
+    const setup2FA = async () => {
+      const { otpauthUrl } = await mockEnable2FA();
+      setOtpauthUrl(otpauthUrl);
+    };
+    const verify2FA = async () => {
+      const { ok } = await mockVerify2FA(otpCode);
+      if (!ok) setAuthError("Invalid 2FA code");
+      else setAuthError(null);
+    };
+
+    return (
+      <div className="max-w-2xl mx-auto py-10 space-y-6">
+        <Card>
+          <CardContent className="p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h1 className="text-xl font-bold">User Settings</h1>
+              <div className="flex items-center gap-2 text-sm">
+                <span>Dark mode</span>
+                <Switch checked={dark} onCheckedChange={setDark} />
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground">Please register or log in to access the trading app. After login, you can enable two‑factor authentication for added security.</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <div className="text-sm font-medium">Email</div>
+                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+                <div className="text-sm font-medium">Password</div>
+                <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+                <div className="flex gap-2 mt-2">
+                  <Button onClick={doLogin} disabled={authLoading}>Log in</Button>
+                  <Button variant="outline" onClick={doRegister} disabled={authLoading}>Register</Button>
+                </div>
+                {authError && <div className="text-red-600 text-sm mt-2">{authError}</div>}
+              </div>
+              <div className="space-y-2">
+                <div className="text-sm font-medium flex items-center justify-between">
+                  <span>Two‑Factor Authentication</span>
+                  <Badge variant={user?.twoFactorEnabled ? "default" : "secondary"}>{user?.twoFactorEnabled ? "Enabled" : "Pending"}</Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">Use an authenticator app (Google Authenticator, Authy, etc.).</p>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={setup2FA}>Get QR</Button>
+                </div>
+                {otpauthUrl && (
+                  <div className="border rounded-xl p-3 text-xs">
+                    <div className="font-medium mb-1">Scan this in your app:</div>
+                    <code className="break-all text-[11px]">{otpauthUrl}</code>
+                    <div className="mt-2 flex items-center gap-2">
+                      <Input placeholder="Enter 6‑digit code" value={otpCode} onChange={(e) => setOtpCode(e.target.value)} />
+                      <Button onClick={verify2FA}>Verify</Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Planned endpoints: <code>/api/auth/register</code>, <code>/api/auth/login</code>, <code>/api/auth/2fa/setup</code>, <code>/api/auth/2fa/verify</code>, <code>/api/user/settings</code>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // === Page router ===
+  const renderPage = () => {
+    switch (page) {
+      case "dashboard":
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2 space-y-4">
+                <RiskSummary />
+                <AccountSummary />
+                <SessionStats />
+              </div>
+              <div className="space-y-4">
+                <OpenTrades />
+              </div>
+            </div>
+            <Calendar />
+          </div>
+        );
+      case "stocks":
+        return <Stocks />;
+      case "risk":
+        return <RiskSettings />;
+      case "journal":
+        return <Journal />;
+      default:
+        return null;
+    }
+  };
+
+  // === Gated render ===
+  if (!user) {
+    return (
+      <div className="p-6">
+        <UnauthedLanding />
+      </div>
+    );
+  }
+
+  // === Authenticated shell ===
+  return (
+    <div className="p-6 space-y-6">
+      <nav className="flex items-center justify-between border-b pb-3">
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: "dashboard", label: "Dashboard" },
+            { key: "stocks", label: "Stocks" },
+            { key: "risk", label: "Risk" },
+            { key: "journal", label: "Journal" },
+          ].map((tab) => (
+            <Button
+              key={tab.key}
+              variant={page === tab.key ? "default" : "outline"}
+              onClick={() => setPage(tab.key)}
+            >
+              {tab.label}
+            </Button>
+          ))}
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <div className="flex items-center gap-2">
+            <span>Dark mode</span>
+            <Switch checked={dark} onCheckedChange={setDark} />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="opacity-70">{user?.email}</span>
+            <Button size="sm" variant="outline" onClick={() => setUser(null)}>Logout</Button>
+          </div>
+        </div>
+      </nav>
+      {renderPage()}
+    </div>
   );
 }
