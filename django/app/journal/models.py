@@ -85,7 +85,7 @@ class Trade(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["user", "status", "exit_time"]),,
+            models.Index(fields=["user", "status", "exit_time"]),
         ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="trades")
