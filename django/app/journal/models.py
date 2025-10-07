@@ -83,6 +83,11 @@ class Trade(models.Model):
         ("CLOSED", "Closed"),
     ]
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "status", "exit_time"]),,
+        ]
+
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="trades")
     journal_day = models.ForeignKey(JournalDay, related_name="trades", on_delete=models.CASCADE)
     ticker = models.CharField(max_length=16)
@@ -93,11 +98,9 @@ class Trade(models.Model):
     exit_price = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
     target_price = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
     entry_time = models.DateTimeField()
+    exit_time  = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=6, choices=STATUS_CHOICES, default="OPEN")
     notes = models.TextField(blank=True)
-
-
-
 
     strategy_tags = models.ManyToManyField(StrategyTag, related_name="trades", blank=True)
 

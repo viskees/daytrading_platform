@@ -19,6 +19,7 @@ import {
   closeTrade as apiCloseTrade,
   createAttachment as apiCreateAttachment,
 } from "@/lib/api";
+import JournalTab from "./components/JournalTab";
 
 
 /* =========================
@@ -787,7 +788,7 @@ export default function App() {
           <Card>
             <CardContent className="p-4">
               <h2 className="font-bold">Trading Journal</h2>
-              <p className="text-sm text-muted-foreground">Placeholder — list of closed trades.</p>
+              <JournalTab />
             </CardContent>
           </Card>
         );

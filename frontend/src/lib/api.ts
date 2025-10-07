@@ -136,6 +136,22 @@ export async function fetchOpenTrades() {
   return list.map((x: any) => normalizeTrade(x));
 }
 
+export async function fetchClosedTrades(params?: { from?: string; to?: string; page?: number }) {
+  const q: string[] = ["status=CLOSED", "ordering=-exit_time"];
+  if (params?.from) q.push(`journal_day__date__gte=${encodeURIComponent(params.from)}`);
+  if (params?.to)   q.push(`journal_day__date__lte=${encodeURIComponent(params.to)}`);
+  if (params?.page) q.push(`page=${params.page}`);
+  const res = await apiFetch(`/journal/trades/?${q.join("&")}`);
+  const data = await res.json();
+  const list = Array.isArray(data) ? data : (data.results ?? []);
+  return {
+    results: list.map((x: any) => normalizeTrade(x)),
+    next: data.next ?? null,
+    prev: data.previous ?? null,
+    count: data.count ?? list.length,
+  };
+}
+
 // export a tiny helper for gating if you want it
 export function hasToken() {
   return !!localStorage.getItem("jwt");

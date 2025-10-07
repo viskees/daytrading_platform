@@ -10,7 +10,6 @@ from django.db import IntegrityError
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import MultiPartParser, FormParser
 
-
 class UserSettingsViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -74,18 +73,27 @@ class TradeViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = TradeSerializer
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
-    filterset_fields = ["journal_day", "status", "ticker", "side"]
-    ordering_fields = ["entry_time", "ticker"]
+    # richer filters so the Journal tab can do date ranges, ticker search, etc.
+    filterset_fields = {
+        "status": ["exact"],
+        "journal_day": ["exact"],
+        "journal_day__date": ["exact", "gte", "lte"],
+        "ticker": ["iexact", "icontains"],
+        "side": ["exact"],
+    }
+    ordering_fields = ["entry_time", "exit_time", "ticker", "id"]
+    # default when no ?ordering=… is provided
+    ordering = ["-entry_time"]
     search_fields = ["ticker", "notes"]
 
     def get_queryset(self):
         qs = Trade.objects.filter(user=self.request.user)
-        day_id = self.request.query_params.get("journal_day")
-        status_f = self.request.query_params.get("status")
-        if day_id:
-            qs = qs.filter(journal_day_id=day_id)
-        if status_f:
-            qs = qs.filter(status=status_f)
+        # Let filter_backends handle filters; only adjust default ordering:
+        # when asking for CLOSED and no explicit ?ordering, prefer latest exits first.
+        if self.request.query_params.get("status") == "CLOSED" and "ordering" not in self.request.query_params:
+            return qs.order_by("-exit_time")
+        if "ordering" not in self.request.query_params:
+            return qs.order_by("-entry_time")
         return qs
 
     def perform_create(self, serializer):
@@ -98,7 +106,10 @@ class TradeViewSet(viewsets.ModelViewSet):
         day = serializer.validated_data.get("journal_day", serializer.instance.journal_day)
         if day.user_id != self.request.user.id:
             raise PermissionDenied("Forbidden")
-        serializer.save(user=self.request.user)
+        inst = serializer.save(user=self.request.user)
+        if inst.status == "CLOSED" and inst.exit_time is None:
+           inst.exit_time = timezone.now()
+           inst.save(update_fields=["exit_time"])
 
 class StrategyTagViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]

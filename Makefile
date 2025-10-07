@@ -15,6 +15,8 @@ help:
 	@echo "  make superuser      # create django superuser (dev)"
 
 dev-up:
+	make frontend-build
+	make ma
 	docker compose --env-file .env.dev -f docker-compose.dev.yml up -d
 
 dev-down:
@@ -28,6 +30,12 @@ django-shell:
 
 superuser:
 	docker compose -f docker-compose.dev.yml exec django python /app/app/manage.py createsuperuser
+
+makemigrations:
+	docker compose -f docker-compose.dev.yml exec django python /app/app/manage.py makemigrations
+
+migrate:
+	docker compose -f docker-compose.dev.yml exec django python /app/app/manage.py migrate
 
 prod-up:
 	docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
