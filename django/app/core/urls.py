@@ -2,9 +2,8 @@
 from django.contrib import admin
 from django.urls import path, include, re_path
 from django.shortcuts import render
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView, TokenRefreshView, TokenVerifyView,
-)
+from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
+from accounts.auth import EmailOnlyTokenView
 
 # Import the concrete list of patterns explicitly
 from two_factor.urls import urlpatterns as tf_urls
@@ -23,7 +22,7 @@ urlpatterns = [
     path("", include(tf_urls, namespace="two_factor")),
 
     # JWT
-    path("api/auth/jwt/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("api/auth/jwt/token/", EmailOnlyTokenView.as_view(), name="token_obtain_pair"),
     path("api/auth/jwt/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api/auth/jwt/verify/", TokenVerifyView.as_view(), name="token_verify"),
 
@@ -32,5 +31,6 @@ urlpatterns = [
     path("api/journal/", include("journal.urls")),
 
     # SPA fallback
-    re_path(r"^(?!admin/|api/|static/|media/).*$", spa, name="spa"),
+    # Do not swallow admin, api, static/media, or pgadmin with the SPA fallback
+    re_path(r"^(?!admin/|api/|pgadmin/|static/|media/).*$", spa, name="spa"),
 ]

@@ -1,0 +1,1 @@
+/admin and /pgadmin dont route correctly

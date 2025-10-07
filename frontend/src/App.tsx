@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import type { ReactNode, ChangeEvent, DragEvent, ClipboardEvent } from "react";
 import {
   login as apiLogin,
   register as apiRegister,
@@ -14,7 +15,11 @@ import {
   fetchOpenTrades as apiFetchOpenTrades,
   hasToken,
   logout as apiLogout,
+  createTrade as apiCreateTrade,
+  closeTrade as apiCloseTrade,
+  createAttachment as apiCreateAttachment,
 } from "@/lib/api";
+
 
 /* =========================
    Types (match Django API)
@@ -26,7 +31,7 @@ export type RiskPolicy = {
 };
 
 export type Trade = {
-  id: string;
+  id: string | number;
   ticker: string;
   side: "LONG" | "SHORT";
   entryPrice: number;
@@ -96,6 +101,211 @@ function runDevTests() {
   console.assert(calcUsedPctOfBudget(300, 600) === 50, "proportional large numbers");
 }
 
+function ModalShell({ title, onClose, children }:{
+  title: string; onClose: ()=>void; children: ReactNode;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-2xl rounded-2xl bg-white dark:bg-zinc-900 border shadow-lg">
+        <div className="flex items-center justify-between border-b p-4">
+          <h3 className="font-semibold">{title}</h3>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </div>
+        <div className="p-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function ImagePasteDrop({
+  files, setFiles, label = "Click or paste screenshot (Ctrl/Cmd+V)"
+}: { files: File[]; setFiles: (f: File[]) => void; label?: string }) {
+  const onInput = (e: ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    setFiles([...files, ...Array.from(e.target.files)]);
+  };
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault();
+    const dropped = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith("image/"));
+    if (dropped.length) setFiles([...files, ...dropped]);
+  };
+  const onPaste = (e: ClipboardEvent) => {
+    const imgs = Array.from(e.clipboardData.files).filter(f => f.type.startsWith("image/"));
+    if (imgs.length) { e.preventDefault(); setFiles([...files, ...imgs]); }
+  };
+  return (
+    <div
+      tabIndex={0}
+      onDrop={onDrop}
+      onDragOver={(e)=>e.preventDefault()}
+      onPaste={onPaste}
+      className="border border-dashed rounded-xl p-3 text-xs text-muted-foreground focus:outline-none focus:ring-2"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <span>{label}</span>
+        <Input type="file" accept="image/*" multiple onChange={onInput} className="w-auto" />
+      </div>
+      {files.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {files.map((f, i) => (
+            <div key={i} className="relative">
+              <img
+                alt={f.name}
+                src={URL.createObjectURL(f)}
+                className="h-16 w-24 object-cover rounded-lg border"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NewTradeDialog({
+  onCreated, onClose
+}: { onCreated: (t: Trade)=>void; onClose: ()=>void }) {
+  const [ticker, setTicker] = useState("");
+  const [side, setSide] = useState<"LONG"|"SHORT">("LONG");
+  const [entryPrice, setEntryPrice] = useState<number | "">("");
+  const [stopLoss, setStopLoss] = useState<number | "">("");
+  const [target, setTarget] = useState<number | "">("");
+  const [size, setSize] = useState<number | "">("");
+  const [notes, setNotes] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [shots, setShots] = useState<File[]>([]);
+  const [saving, setSaving] = useState(false);
+  const toggleTag = (tag:string)=> setTags(t => t.includes(tag) ? t.filter(x=>x!==tag) : [...t, tag]);
+
+  const submit = async () => {
+    if (!ticker || !entryPrice) return;
+    setSaving(true);
+    try {
+      const trade = await apiCreateTrade({
+        ticker,
+        side,
+        entryPrice: Number(entryPrice),
+        stopLoss: stopLoss ? Number(stopLoss) : undefined,
+        target: target ? Number(target) : undefined,
+        size: size ? Number(size) : undefined,
+        notes,
+        strategyTags: tags,
+      });
+      // optional uploads
+      for (const f of shots) {
+        await apiCreateAttachment(trade.id, f);
+      }
+      onCreated(trade);
+      onClose();
+    } catch (e:any) {
+      console.error("Create trade failed:", e?.message, e);
+      alert(`Create trade failed: ${e?.message ?? "Unknown error"}`);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <ModalShell title="New trade" onClose={onClose}>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <div className="text-xs mb-1">Ticker</div>
+          <Input value={ticker} onChange={e=>setTicker(e.target.value.toUpperCase())} />
+        </div>
+        <div>
+          <div className="text-xs mb-1">Side</div>
+          <div className="flex gap-2">
+            <Button variant={side==="LONG"?"default":"outline"} onClick={()=>setSide("LONG")}>LONG</Button>
+            <Button variant={side==="SHORT"?"default":"outline"} onClick={()=>setSide("SHORT")}>SHORT</Button>
+          </div>
+        </div>
+        <div>
+          <div className="text-xs mb-1">Entry</div>
+          <Input type="number" value={entryPrice} onChange={e=>setEntryPrice(e.target.value ? Number(e.target.value) : "")}/>
+        </div>
+        <div>
+          <div className="text-xs mb-1">Stop</div>
+          <Input type="number" value={stopLoss} onChange={e=>setStopLoss(e.target.value ? Number(e.target.value) : "")}/>
+        </div>
+        <div>
+          <div className="text-xs mb-1">Target</div>
+          <Input type="number" value={target} onChange={e=>setTarget(e.target.value ? Number(e.target.value) : "")}/>
+        </div>
+        <div>
+          <div className="text-xs mb-1">Size</div>
+          <Input type="number" value={size} onChange={e=>setSize(e.target.value ? Number(e.target.value) : "")}/>
+        </div>
+        <div className="md:col-span-3">
+          <div className="text-xs mb-1">Strategy</div>
+          <div className="flex flex-wrap gap-2">
+            {STRATEGY_TAGS.map(tag=>(
+              <Button key={tag} size="sm" variant={tags.includes(tag)?"default":"outline"} onClick={()=>toggleTag(tag)}>
+                {tags.includes(tag) ? `− ${tag}` : `+ ${tag}`}
+              </Button>
+            ))}
+          </div>
+        </div>
+        <div className="md:col-span-3">
+          <div className="text-xs mb-1">Notes</div>
+          <Textarea value={notes} onChange={e=>setNotes(e.target.value)} className="h-24"/>
+        </div>
+        <div className="md:col-span-3">
+          <ImagePasteDrop files={shots} setFiles={setShots} />
+        </div>
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button onClick={submit} disabled={saving || !ticker || !entryPrice}>Create</Button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function CloseTradeDialog({
+  trade, onClosed, onClose
+}: { trade: Trade; onClosed: (id: string)=>void; onClose: ()=>void }) {
+  const [exitPrice, setExitPrice] = useState<number | "">("");
+  const [notes, setNotes] = useState(trade.notes ?? "");
+  const [shots, setShots] = useState<File[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    setSaving(true);
+    try {
+      await apiCloseTrade(trade.id, {
+        exitPrice: exitPrice ? Number(exitPrice) : undefined,
+        notes,
+      });
+      for (const f of shots) {
+        await apiCreateAttachment(trade.id, f);
+      }
+      onClosed(trade.id);
+      onClose();
+    } catch {
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <ModalShell title={`Close ${trade.ticker}`} onClose={onClose}>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <div className="text-xs mb-1">Exit price</div>
+          <Input type="number" value={exitPrice} onChange={e=>setExitPrice(e.target.value ? Number(e.target.value) : "")}/>
+        </div>
+        <div className="md:col-span-2">
+          <div className="text-xs mb-1">Notes</div>
+          <Textarea value={notes} onChange={e=>setNotes(e.target.value)} className="h-24"/>
+        </div>
+        <div className="md:col-span-2">
+          <ImagePasteDrop files={shots} setFiles={setShots} label="Click or paste exit screenshot (Ctrl/Cmd+V)"/>
+        </div>
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button onClick={submit} disabled={saving}>Close trade</Button>
+      </div>
+    </ModalShell>
+  );
+}
+
 /* =========================
    Mock data (fallbacks)
    ========================= */
@@ -125,6 +335,8 @@ export default function App() {
   const [openTrades, setOpenTrades] = useState<Trade[]>(MOCK_OPEN_TRADES);
   const [dark, setDark] = useState<boolean>(getInitialDark());
   const [authed, setAuthed] = useState<boolean>(hasToken());
+  const [showNew, setShowNew] = useState(false);
+  const [closing, setClosing] = useState<Trade | null>(null);
 
   // Mock stats for now (wire later)
   const todaysPL = useMemo(() => 0.0, []);
@@ -164,7 +376,7 @@ export default function App() {
     (async () => {
       try {
         const settings = await apiFetchUserSettings();
-        if (settings?.theme) setDark(settings.theme === "dark");
+        if (settings) setDark(!!settings.dark_mode);
       } catch {}
       try {
         const trades = await apiFetchOpenTrades();
@@ -349,12 +561,33 @@ export default function App() {
     );
   }
 
+  function handleRowScreenshotPick(tradeId: string | number) {
+    return async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files?.length) return;
+
+      try {
+        // allow multiple images if you want (add `multiple` to the input)
+        for (const file of Array.from(files)) {
+          await apiCreateAttachment(tradeId, file);
+        }
+        // optional: toast / refresh attachments list here
+      } catch (err) {
+        // optional: toast error
+        console.error("Upload failed", err);
+      } finally {
+        // let the user pick the same file again if needed
+        e.currentTarget.value = "";
+      }
+    };
+  }
+
   const OpenTrades = () => (
     <Card>
       <CardContent className="p-4">
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-bold">Open Trades</h2>
-          <Button variant="outline" size="sm">New trade</Button>
+          <Button variant="outline" size="sm" onClick={() => setShowNew(true)}>New trade</Button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -400,11 +633,14 @@ export default function App() {
                     <Textarea defaultValue={t.notes ?? ""} className="h-16" />
                   </td>
                   <td className="py-2 pr-2 space-y-2">
-                    <Button size="sm" variant="outline">Close</Button>
-                    <div>
-                      <label className="text-xs">Screenshot</label>
-                      <Input type="file" accept="image/*" className="mt-1" />
-                    </div>
+                    <Input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="mt-1"
+                      onChange={handleRowScreenshotPick(t.id)}
+                    />
+                    <Button size="sm" variant="outline" onClick={() => setClosing(t)}>Close</Button>
                   </td>
                 </tr>
               ))}
@@ -412,7 +648,7 @@ export default function App() {
           </table>
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          On close, move to journal. Endpoints: <code>/api/journal/trades</code>, <code>/api/journal/trades/:id</code>.
+          On close, move to journal.
         </p>
       </CardContent>
     </Card>
@@ -598,6 +834,19 @@ export default function App() {
         </div>
       </nav>
       {renderPage()}
+      {showNew && (
+        <NewTradeDialog
+          onClose={() => setShowNew(false)}
+          onCreated={(t) => setOpenTrades(prev => [t, ...prev])}
+        />
+      )}
+      {closing && (
+        <CloseTradeDialog
+          trade={closing}
+          onClose={() => setClosing(null)}
+          onClosed={(id) => setOpenTrades(prev => prev.filter(t => t.id !== id))}
+        />
+      )}
     </div>
   );
 }

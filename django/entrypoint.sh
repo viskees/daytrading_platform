@@ -1,74 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-# Bootstrap a minimal project on first run
+# No project bootstrap here. We rely on the repo's Django project exclusively.
 if [ ! -f "/app/app/manage.py" ]; then
-  echo "No Django project detected. Creating skeleton 'core'..."
-  django-admin startproject core app
-
-  cat >> /app/app/core/settings.py <<'PY'
-import os
-from pathlib import Path
-import environ
-env = environ.Env(DEBUG=(bool, False))
-BASE_DIR = Path(__file__).resolve().parent.parent
-# Read .env if present (dev)
-env_file = os.path.join(Path(__file__).resolve().parent.parent.parent, '.env.dev')
-if os.path.exists(env_file):
-    environ.Env.read_env(env_file)
-
-SECRET_KEY = env('DJANGO_SECRET_KEY', default='unsafe-dev-key')
-DEBUG = env('DJANGO_DEBUG', default=False)
-ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=["*"])
-
-
-ROOT_URLCONF = 'core.urls'
-TEMPLATES = [{
-  'BACKEND': 'django.template.backends.django.DjangoTemplates',
-  'DIRS': [BASE_DIR / "templates"],
-  'APP_DIRS': True,
-  'OPTIONS': {'context_processors': [
-      'django.template.context_processors.debug',
-      'django.template.context_processors.request',
-      'django.contrib.auth.context_processors.auth',
-      'django.contrib.messages.context_processors.messages',
-  ]},
-}]
-WSGI_APPLICATION = 'core.wsgi.application'   # kept for compatibility
-ASGI_APPLICATION = 'core.asgi.application'   # enable ASGI
-
-DATABASES = {
-  'default': {
-    'ENGINE': 'django.db.backends.postgresql',
-    'NAME': env('POSTGRES_DB', default='daytrading'),
-    'USER': env('POSTGRES_USER', default='daytrader'),
-    'PASSWORD': env('POSTGRES_PASSWORD', default='daytraderpass'),
-    'HOST': env('POSTGRES_HOST', default='postgres'),
-    'PORT': env('POSTGRES_PORT', default='5432'),
-  }
-}
-
-STATIC_URL = 'static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
-STORAGES = {
-    "staticfiles": {
-        "BACKEND": "django.contrib.staticfiles.storage.ManifestStaticFilesStorage"
-    }
-}
-
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-CSRF_TRUSTED_ORIGINS = [f"https://{h}" for h in ALLOWED_HOSTS if h not in ['*']]
-PY
-
-  mkdir -p /app/app/templates
-  printf '%s\n' "<h1>Daytrading App — Hello from Django (ASGI)</h1>" > /app/app/templates/index.html
-  cat > /app/app/core/urls.py <<'PY'
-from django.contrib import admin
-from django.urls import path
-from django.shortcuts import render
-def home(request): return render(request, "index.html")
-urlpatterns = [path('admin/', admin.site.urls), path('', home, name='home')]
-PY
+  echo "ERROR: /app/app/manage.py not found. Did you mount the django app volume correctly?"
+  ls -la /app/app
+  exit 1
 fi
 
 # Wait for Postgres
@@ -110,6 +47,19 @@ if [ ! -w /app/app/staticfiles ]; then
   echo "Static root not writable. Current uid:gid is $(id -u):$(id -g)"
   ls -ld /app/app/staticfiles
   exit 1
+fi
+
+# Check media directory permissions (uploads)
+echo "Checking media root..."
+mkdir -p /app/app/media /app/app/media/journal_attachments
+if ! touch /app/app/media/.rwtest 2>/dev/null; then
+  echo "Media root not writable by uid:gid $(id -u):$(id -g)"
+  ls -ld /app/app/media || true
+  # Helpful hint for bind mount
+  echo "If you're on Linux/WSL: chown the host folder:  sudo chown -R \$USER:\$USER django/app/media"
+  exit 1
+else
+  rm -f /app/app/media/.rwtest
 fi
 
 # Collect static files - served by caddy
