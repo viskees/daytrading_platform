@@ -13,6 +13,7 @@ type ApiTrade = {
   status: "OPEN" | "CLOSED";
   notes: string;
   strategy_tags?: { id: number; name: string }[]; // if your serializer includes nested names
+  strategy_tag_ids?: number[];                    // <-- when backend returns only ids
   entry_time?: string;  // ISO
   created_at?: string;  // if entry_time not present
 };
@@ -24,6 +25,9 @@ function toArray<T>(x: unknown): T[] {
 
 function normalizeTrade(x: any) {
   const rawTags = toArray<any>(x?.strategy_tags ?? x?.strategyTags);
+  const tagNames = rawTags
+    .map((t: any) => (t && typeof t === "object" ? t.name : t))
+    .filter(Boolean);
   return {
     id: x.id,
     journal_day: x.journal_day,
@@ -37,9 +41,13 @@ function normalizeTrade(x: any) {
     size: x.quantity || undefined,
     notes: x.notes || "",
     status: x.status,
-    strategyTags: rawTags
-      .map((t: any) => (t && typeof t === "object" ? t.name : t))
-      .filter(Boolean),
+    strategyTags: Array.from(
+      new Set(
+        rawTags
+          .map((t: any) => (t && typeof t === "object" ? t.name : t))
+          .filter(Boolean)
+      )
+    ),
     riskR: undefined,
   } as const;
 }
@@ -133,23 +141,39 @@ export async function fetchOpenTrades() {
   const res = await apiFetch(`/journal/trades/?status=OPEN&ordering=-entry_time`);
   const data = await res.json();
   const list = Array.isArray(data) ? data : (data.results ?? []);
-  return list.map((x: any) => normalizeTrade(x));
+  return Promise.all(list.map((x: any) => normalizeTradeAsync(x)));
 }
 
 export async function fetchClosedTrades(params?: { from?: string; to?: string; page?: number }) {
-  const q: string[] = ["status=CLOSED", "ordering=-exit_time"];
-  if (params?.from) q.push(`journal_day__date__gte=${encodeURIComponent(params.from)}`);
-  if (params?.to)   q.push(`journal_day__date__lte=${encodeURIComponent(params.to)}`);
-  if (params?.page) q.push(`page=${params.page}`);
-  const res = await apiFetch(`/journal/trades/?${q.join("&")}`);
-  const data = await res.json();
-  const list = Array.isArray(data) ? data : (data.results ?? []);
-  return {
-    results: list.map((x: any) => normalizeTrade(x)),
-    next: data.next ?? null,
-    prev: data.previous ?? null,
-    count: data.count ?? list.length,
+  const build = (ordering: "-exit_time" | "-entry_time") => {
+    const q: string[] = ["status=CLOSED", `ordering=${ordering}`];
+    if (params?.from) q.push(`journal_day__date__gte=${encodeURIComponent(params.from)}`);
+    if (params?.to)   q.push(`journal_day__date__lte=${encodeURIComponent(params.to)}`);
+    if (params?.page) q.push(`page=${params.page}`);
+    return `/journal/trades/?${q.join("&")}`;
   };
+  try {
+    const res = await apiFetch(build("-exit_time"));
+    const data = await res.json();
+    const list = Array.isArray(data) ? data : (data.results ?? []);
+    return {
+      results: await Promise.all(list.map((x: any) => normalizeTradeAsync(x))),
+      next: data.next ?? null,
+      prev: data.previous ?? null,
+      count: data.count ?? list.length,
+    };
+  } catch {
+    // fallback for backends without exit_time
+    const res = await apiFetch(build("-entry_time"));
+    const data = await res.json();
+    const list = Array.isArray(data) ? data : (data.results ?? []);
+    return {
+      results: list.map((x: any) => normalizeTrade(x)),
+      next: data.next ?? null,
+      prev: data.previous ?? null,
+      count: data.count ?? list.length,
+    };
+  }
 }
 
 // export a tiny helper for gating if you want it
@@ -187,22 +211,57 @@ export async function createTrade(payload: {
     }),
   });
   const json = await res.json();
-  return normalizeTrade(json);
+  return normalizeTradeAsync(json);
+}
+
+export async function updateTrade(
+  id: number | string,
+  payload: {
+    ticker?: string;
+    side?: "LONG" | "SHORT";
+    entryPrice?: number;
+    stopLoss?: number | null;
+    target?: number | null;
+    size?: number;
+    notes?: string;
+    strategyTags?: string[];
+  }
+) {
+  const hasStrategy = Array.isArray(payload.strategyTags);
+  const strategy_tag_ids = hasStrategy ? await mapTagNamesToIds(payload.strategyTags) : undefined;
+  const res = await apiFetch(`/journal/trades/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      ...(payload.ticker ? { ticker: payload.ticker } : {}),
+      ...(payload.side ? { side: payload.side } : {}),
+      ...(payload.entryPrice !== undefined ? { entry_price: payload.entryPrice } : {}),
+      ...(payload.stopLoss !== undefined ? { stop_price: payload.stopLoss } : {}),
+      ...(payload.target !== undefined ? { target_price: payload.target } : {}),
+      ...(payload.size !== undefined ? { quantity: payload.size } : {}),
+      ...(payload.notes !== undefined ? { notes: payload.notes } : {}),
+      // if the user edited tags, send them even if empty to clear all
+      ...(hasStrategy ? { strategy_tag_ids: strategy_tag_ids ?? [] } : {}),
+    }),
+  });
+  const json = await res.json();
+  return normalizeTradeAsync(json);
 }
 
 export async function closeTrade(id: number | string, payload: { exitPrice?: number; notes?: string; strategyTags?: string[] }) {
-  const strategy_tag_ids = await mapTagNamesToIds(payload.strategyTags);
+  const hasStrategy = Array.isArray(payload.strategyTags);
+  const strategy_tag_ids = hasStrategy ? await mapTagNamesToIds(payload.strategyTags) : undefined;
   const res = await apiFetch(`/journal/trades/${id}/`, {
     method: "PATCH",
     body: JSON.stringify({
       status: "CLOSED",
       exit_price: payload.exitPrice ?? null,
       notes: payload.notes ?? "",
-      ...(strategy_tag_ids.length ? { strategy_tag_ids } : {}),
+      // allow clearing tags when closing
+      ...(hasStrategy ? { strategy_tag_ids: strategy_tag_ids ?? [] } : {}),
     }),
   });
   const json = await res.json();
-  return normalizeTrade(json);
+  return normalizeTradeAsync(json);
 }
 
 export async function createAttachment(tradeId: number | string, file: File, caption = "") {
@@ -221,6 +280,27 @@ async function fetchTags(): Promise<{id:number; name:string}[]> {
   const data = await res.json();
   return Array.isArray(data) ? data : (data?.results ?? []);
 }
+
+// -------- strategy-tag id→name helper (with cache) ----------
+let tagCache: Map<number, string> | null = null;
+async function getTagDict(): Promise<Map<number, string>> {
+  if (tagCache) return tagCache;
+  const all = await fetchTags();
+  tagCache = new Map(all.map(t => [t.id, t.name]));
+  return tagCache;
+}
+
+async function normalizeTradeAsync(x: any) {
+  const base = normalizeTrade(x);
+  // If no names came through but we have ids, map ids -> names via cache
+  if ((!base.strategyTags || base.strategyTags.length === 0) && Array.isArray(x?.strategy_tag_ids)) {
+    const dict = await getTagDict();
+    const names = x.strategy_tag_ids.map((id: number) => dict.get(id)).filter(Boolean) as string[];
+    return { ...base, strategyTags: Array.from(new Set(names)) };
+  }
+  return base;
+}
+
 
 async function mapTagNamesToIds(names?: string[]) {
   if (!names || !names.length) return [];

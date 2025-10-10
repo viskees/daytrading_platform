@@ -20,6 +20,8 @@ import {
   createAttachment as apiCreateAttachment,
 } from "@/lib/api";
 import JournalTab from "./components/JournalTab";
+import TradeEditor from "./components/TradeEditor";
+import { updateTrade } from "./lib/api";
 
 
 /* =========================
@@ -338,6 +340,8 @@ export default function App() {
   const [authed, setAuthed] = useState<boolean>(hasToken());
   const [showNew, setShowNew] = useState(false);
   const [closing, setClosing] = useState<Trade | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editing, setEditing] = useState<any|null>(null);
 
   // Mock stats for now (wire later)
   const todaysPL = useMemo(() => 0.0, []);
@@ -547,41 +551,22 @@ export default function App() {
     </Card>
   );
 
-  function toggleTag(tradeId: string, tag: string) {
-    setOpenTrades((prev) =>
-      prev.map((t) =>
-        t.id === tradeId
-          ? {
-              ...t,
-              strategyTags: t.strategyTags?.includes(tag)
-                ? (t.strategyTags || []).filter((x) => x !== tag)
-                : [ ...(t.strategyTags || []), tag ],
-            }
-          : t
-      )
-    );
-  }
+  const onEditTrade = (t: any) => {
+   setEditing(t);
+   setEditOpen(true);
+ };
 
-  function handleRowScreenshotPick(tradeId: string | number) {
-    return async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files;
-      if (!files?.length) return;
-
-      try {
-        // allow multiple images if you want (add `multiple` to the input)
-        for (const file of Array.from(files)) {
-          await apiCreateAttachment(tradeId, file);
-        }
-        // optional: toast / refresh attachments list here
-      } catch (err) {
-        // optional: toast error
-        console.error("Upload failed", err);
-      } finally {
-        // let the user pick the same file again if needed
-        e.currentTarget.value = "";
-      }
-    };
-  }
+ const onSaveEdit = async (vals: any) => {
+   if (!editing) return;
+   const updated = await updateTrade(editing.id, vals);
+   // optimistic local replace
+   setOpenTrades(prev => prev.map(x => (x.id === updated.id ? updated : x)));
+   // ensure normalized tags (and any server-side adjustments) are reflected
+   try {
+     const fresh = await apiFetchOpenTrades();
+     if (Array.isArray(fresh)) setOpenTrades(fresh as Trade[]);
+   } catch { /* ignore – local optimistic update already applied */ }
+ };
 
   const OpenTrades = () => (
     <Card>
@@ -622,27 +607,18 @@ export default function App() {
                         <Badge key={tag} variant="secondary" className="rounded-full">{tag}</Badge>
                       ))}
                     </div>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {STRATEGY_TAGS.map((tag) => (
-                        <Button key={tag} size="sm" variant="outline" onClick={() => toggleTag(t.id, tag)}>
-                          {t.strategyTags?.includes(tag) ? `− ${tag}` : `+ ${tag}`}
-                        </Button>
-                      ))}
-                    </div>
                   </td>
                   <td className="py-2 pr-2 max-w-[240px]">
-                    <Textarea defaultValue={t.notes ?? ""} className="h-16" />
+                    <div className="text-sm text-muted-foreground whitespace-pre-wrap line-clamp-3" title={t.notes || ""}>
+                      {t.notes || ""}
+                    </div>
                   </td>
                   <td className="py-2 pr-2 space-y-2">
-                    <Input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="mt-1"
-                      onChange={handleRowScreenshotPick(t.id)}
-                    />
-                    <Button size="sm" variant="outline" onClick={() => setClosing(t)}>Close</Button>
-                  </td>
+                    <div className="flex items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={() => onEditTrade(t)}>Edit</Button>
+                        <Button size="sm" variant="outline" onClick={() => setClosing(t)}>Close</Button>
+                    </div>
+                 </td>
                 </tr>
               ))}
             </tbody>
@@ -838,7 +814,21 @@ export default function App() {
       {showNew && (
         <NewTradeDialog
           onClose={() => setShowNew(false)}
-          onCreated={(t) => setOpenTrades(prev => [t, ...prev])}
+          onCreated={(t) => {
+            // Immediately reflect real server state (normalizes strategy tags)
+            (async () => {
+              try {
+                const fresh = await apiFetchOpenTrades();
+                setOpenTrades(Array.isArray(fresh) ? (fresh as Trade[]) : []);
+              } catch {
+                // Fallback: if fetch fails, at least drop obvious mock ids and prepend
+                setOpenTrades(prev => {
+                  const nonMocks = prev.filter(x => !(typeof x.id === "string" && /^t\\d+$/.test(String(x.id))));
+                  return [t, ...nonMocks];
+                });
+              }
+            })();
+          }}
         />
       )}
       {closing && (
@@ -846,6 +836,24 @@ export default function App() {
           trade={closing}
           onClose={() => setClosing(null)}
           onClosed={(id) => setOpenTrades(prev => prev.filter(t => t.id !== id))}
+        />
+      )}
+      {editOpen && editing && (
+        <TradeEditor
+          mode="edit"
+          initial={{
+            id: editing.id,
+            ticker: editing.ticker,
+            side: editing.side,
+            entryPrice: editing.entryPrice,
+            stopLoss: editing.stopLoss ?? null,
+            target: editing.target ?? null,
+            size: editing.size,
+            notes: editing.notes ?? "",
+            strategyTags: editing.strategyTags ?? [],
+          }}
+          onSubmit={onSaveEdit}
+          onClose={() => { setEditOpen(false); setEditing(null); }}
         />
       )}
     </div>

@@ -87,13 +87,17 @@ class TradeViewSet(viewsets.ModelViewSet):
     search_fields = ["ticker", "notes"]
 
     def get_queryset(self):
-        qs = Trade.objects.filter(user=self.request.user)
-        # Let filter_backends handle filters; only adjust default ordering:
-        # when asking for CLOSED and no explicit ?ordering, prefer latest exits first.
-        if self.request.query_params.get("status") == "CLOSED" and "ordering" not in self.request.query_params:
-            return qs.order_by("-exit_time")
-        if "ordering" not in self.request.query_params:
-            return qs.order_by("-entry_time")
+        qs = (
+            Trade.objects
+            .filter(user=self.request.user)
+            .prefetch_related("strategy_tags")   # important for returning names
+        )
+        day_id = self.request.query_params.get("journal_day")
+        status_f = self.request.query_params.get("status")
+        if day_id:
+            qs = qs.filter(journal_day_id=day_id)
+        if status_f:
+            qs = qs.filter(status=status_f)
         return qs
 
     def perform_create(self, serializer):

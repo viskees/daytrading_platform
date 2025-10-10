@@ -1,7 +1,51 @@
 
 from rest_framework import serializers
 from .models import UserSettings, JournalDay, Trade, StrategyTag, Attachment
+from rest_framework import serializers
+from .models import Trade, StrategyTag
 
+class StrategyTagSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StrategyTag
+        fields = ("id", "name")
+
+class TradeSerializer(serializers.ModelSerializer):
+    # READ: return tags as [{id,name}, …]
+    strategy_tags = StrategyTagSerializer(many=True, read_only=True)
+    # WRITE: accept ids; maps onto the same m2m via source='strategy_tags'
+    strategy_tag_ids = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=StrategyTag.objects.all(),
+        write_only=True,
+        required=False,
+        source="strategy_tags",
+    )
+
+    class Meta:
+        model = Trade
+        fields = [
+            "id", "journal_day", "ticker", "side", "quantity",
+            "entry_price", "stop_price", "target_price", "exit_price",
+            "status", "notes", "entry_time",
+            "strategy_tags",        # read-only names
+            "strategy_tag_ids",     # write-only ids
+        ]
+
+    # Ensure empty list clears the relation on PATCH/PUT
+    def create(self, validated_data):
+        tags = validated_data.pop("strategy_tags", [])
+        trade = super().create(validated_data)
+        if tags is not None:
+            trade.strategy_tags.set(tags)
+        return trade
+
+    def update(self, instance, validated_data):
+        sentinel = object()
+        tags = validated_data.pop("strategy_tags", sentinel)
+        trade = super().update(instance, validated_data)
+        if tags is not sentinel:          # present in payload (even empty)
+            trade.strategy_tags.set(tags)
+        return trade
 
 class StrategyTagSerializer(serializers.ModelSerializer):
     class Meta:
