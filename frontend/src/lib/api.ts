@@ -184,6 +184,21 @@ export function logout() {
   localStorage.removeItem("jwt");
 }
 
+export async function fetchSessionStatusToday() {
+  const res = await apiFetch(`/journal/trades/status/today/`);
+  return res.json(); // { trades, win_rate, avg_r, best_r, worst_r, daily_loss_pct, used_daily_risk_pct }
+}
+
+export async function fetchAccountSummary() {
+  const res = await apiFetch(`/journal/trades/account/summary/`);
+  return res.json() as Promise<{
+    pl_today: number;
+    pl_total: number;
+    equity_today: number | null;
+    equity_last_close: number | null;
+  }>;
+}
+
 export async function createTrade(payload: {
   ticker: string;
   side: "LONG" | "SHORT";
@@ -207,7 +222,7 @@ export async function createTrade(payload: {
       stop_price: payload.stopLoss ?? null,
       target_price: payload.target ?? null,
       notes: payload.notes ?? "",
-      ...(strategy_tag_ids.length ? { strategy_tag_ids } : {}),
+      ...(payload.strategyTags !== undefined ? { strategy_tag_ids } : {}),
     }),
   });
   const json = await res.json();
@@ -228,7 +243,7 @@ export async function updateTrade(
   }
 ) {
   const hasStrategy = Array.isArray(payload.strategyTags);
-  const strategy_tag_ids = hasStrategy ? await mapTagNamesToIds(payload.strategyTags) : undefined;
+  const strategy_tag_ids = await mapTagNamesToIds(payload.strategyTags);
   const res = await apiFetch(`/journal/trades/${id}/`, {
     method: "PATCH",
     body: JSON.stringify({
@@ -239,8 +254,7 @@ export async function updateTrade(
       ...(payload.target !== undefined ? { target_price: payload.target } : {}),
       ...(payload.size !== undefined ? { quantity: payload.size } : {}),
       ...(payload.notes !== undefined ? { notes: payload.notes } : {}),
-      // if the user edited tags, send them even if empty to clear all
-      ...(hasStrategy ? { strategy_tag_ids: strategy_tag_ids ?? [] } : {}),
+      ...(payload.strategyTags !== undefined ? { strategy_tag_ids } : {}),
     }),
   });
   const json = await res.json();
@@ -324,17 +338,101 @@ async function getOrCreateTodayDayId(): Promise<number> {
   inflightDayPromise = (async () => {
     const d = today();
     // Single POST: backend returns 201 (created) or 200 (existing)
-    const r = await apiFetch(`/journal/days/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: d }),
-    });
+    const r = await apiFetch(`/journal/days/`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ date: d }) });
     const j = await r.json();
-    return j.id;
+    //if (j.existing) toast.info("Using today's journal day");
+  return j.id;
   })();
   try {
     return await inflightDayPromise;
   } finally {
     inflightDayPromise = null;
   }
+}
+
+// --- Equity & Adjustments API (single source of truth) ---
+export type AdjustmentReason = 'DEPOSIT' | 'WITHDRAWAL' | 'FEE' | 'CORRECTION';
+
+// Read the same token your app already stores (cover common keys)
+function getAccessToken(): string | null {
+  try {
+    // Case 1: token is stored as plain string
+    const direct = localStorage.getItem('access') || localStorage.getItem('access_token');
+    if (direct && direct.startsWith('ey')) return direct;
+
+    // Case 2: stored as JSON object { "refresh": "...", "access": "..." }
+    const raw = localStorage.getItem('access');
+    if (raw && raw.startsWith('{')) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.access) return parsed.access;
+    }
+
+    // Case 3: fallback to sessionStorage
+    const s = sessionStorage.getItem('access');
+    if (s && s.startsWith('ey')) return s;
+  } catch (e) {
+    console.warn('getAccessToken failed:', e);
+  }
+  return null;
+}
+
+function getCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const m = document.cookie.match(new RegExp('(^|; )' + name.replace(/[-\\^$*+?.()|[\\]{}]/g, '\\$&') + '=([^;]*)'));
+  return m ? decodeURIComponent(m[2]) : null;
+}
+
+export async function authedFetch(url: string, init: RequestInit = {}) {
+  const token = getAccessToken();
+  const headers: Record<string, string> = {
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const method = (init.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    headers['X-CSRFToken'] = headers['X-CSRFToken'] || getCookie('csrftoken') || '';
+    if (!headers['Content-Type'] && init.body && !(init.body instanceof FormData)) {
+      headers['Content-Type'] = 'application/json';
+    }
+  }
+  const res = await fetch(url, { ...init, headers, credentials: 'include' });
+  if (!res.ok) throw new Error(await res.text());
+  return res;
+}
+
+export async function getTodayJournalDay(dateISO?: string) {
+  const date = dateISO ?? new Date().toISOString().slice(0, 10);
+  const res = await authedFetch(`/api/journal/days/?date=${encodeURIComponent(date)}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data[0] : data;
+}
+
+export async function patchDayStartEquity(id: number, dayStartEquity: number) {
+  const res = await authedFetch(`/api/journal/days/${id}/`, {
+    method: 'PATCH',
+    body: JSON.stringify({ day_start_equity: dayStartEquity }),
+  });
+  return res.json();
+}
+
+export async function listAdjustments(journalDayId: number) {
+  const res = await authedFetch(`/api/journal/account/adjustments/?journal_day=${journalDayId}`);
+  return res.json();
+}
+
+export async function createAdjustment(input: {
+  journal_day: number;
+  amount: number;
+  reason: AdjustmentReason;
+  note?: string;
+}) {
+  const res = await authedFetch(`/api/journal/account/adjustments/`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return res.json();
+}
+
+export async function deleteAdjustment(id: number) {
+  const res = await authedFetch(`/api/journal/account/adjustments/${id}/`, { method: 'DELETE' });
 }

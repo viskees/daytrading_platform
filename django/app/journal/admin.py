@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Trade, JournalDay, StrategyTag, Attachment, UserSettings
+from .models import JournalDay, Trade, StrategyTag, Attachment, UserSettings, AccountAdjustment
 
 @admin.register(Trade)
 class TradeAdmin(admin.ModelAdmin):
@@ -38,3 +38,8 @@ class AttachmentAdmin(admin.ModelAdmin):
 @admin.register(UserSettings)
 class UserSettingsAdmin(admin.ModelAdmin):
     list_display = ("user", "dark_mode", "max_risk_per_trade_pct", "max_daily_loss_pct", "max_trades_per_day")
+
+@admin.register(AccountAdjustment)
+class AccountAdjustmentAdmin(admin.ModelAdmin):
+    list_display = ("id","user","journal_day","amount","reason","at_time")
+    list_filter = ("reason","journal_day__date")

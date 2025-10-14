@@ -66,6 +66,10 @@ fi
 echo "Collecting static..."
 python /app/app/manage.py collectstatic --noinput
 
+# Seed strategy tags
+echo "Seeding strategy tags..."
+python /app/app/manage.py seed_strategy_tags
+
 # Run ASGI app
 if [ "${DJANGO_DEBUG}" = "1" ]; then
   echo "Starting Django (dev) with Uvicorn (ASGI + reload) ..."

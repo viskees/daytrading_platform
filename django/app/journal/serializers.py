@@ -1,57 +1,10 @@
-
 from rest_framework import serializers
-from .models import UserSettings, JournalDay, Trade, StrategyTag, Attachment
-from rest_framework import serializers
-from .models import Trade, StrategyTag
+from .models import JournalDay, Trade, StrategyTag, Attachment, UserSettings, AccountAdjustment
 
 class StrategyTagSerializer(serializers.ModelSerializer):
     class Meta:
         model = StrategyTag
         fields = ("id", "name")
-
-class TradeSerializer(serializers.ModelSerializer):
-    # READ: return tags as [{id,name}, …]
-    strategy_tags = StrategyTagSerializer(many=True, read_only=True)
-    # WRITE: accept ids; maps onto the same m2m via source='strategy_tags'
-    strategy_tag_ids = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=StrategyTag.objects.all(),
-        write_only=True,
-        required=False,
-        source="strategy_tags",
-    )
-
-    class Meta:
-        model = Trade
-        fields = [
-            "id", "journal_day", "ticker", "side", "quantity",
-            "entry_price", "stop_price", "target_price", "exit_price",
-            "status", "notes", "entry_time",
-            "strategy_tags",        # read-only names
-            "strategy_tag_ids",     # write-only ids
-        ]
-
-    # Ensure empty list clears the relation on PATCH/PUT
-    def create(self, validated_data):
-        tags = validated_data.pop("strategy_tags", [])
-        trade = super().create(validated_data)
-        if tags is not None:
-            trade.strategy_tags.set(tags)
-        return trade
-
-    def update(self, instance, validated_data):
-        sentinel = object()
-        tags = validated_data.pop("strategy_tags", sentinel)
-        trade = super().update(instance, validated_data)
-        if tags is not sentinel:          # present in payload (even empty)
-            trade.strategy_tags.set(tags)
-        return trade
-
-class StrategyTagSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = StrategyTag
-        fields = ["id", "name"]
-
 
 class AttachmentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -70,7 +23,9 @@ class AttachmentSerializer(serializers.ModelSerializer):
 
 
 class TradeSerializer(serializers.ModelSerializer):
+    # READ: tags as [{id,name}]
     strategy_tags = StrategyTagSerializer(many=True, read_only=True)
+    # WRITE: ids map onto the same m2m
     strategy_tag_ids = serializers.PrimaryKeyRelatedField(
         many=True,
         queryset=StrategyTag.objects.all(),
@@ -81,6 +36,8 @@ class TradeSerializer(serializers.ModelSerializer):
     attachments = AttachmentSerializer(many=True, read_only=True)
     risk_per_share = serializers.FloatField(read_only=True)
     r_multiple = serializers.FloatField(read_only=True)
+    # allow client to set explicit exit_time when closing (server may also set default)
+    exit_time = serializers.DateTimeField(required=False, allow_null=True)
 
     class Meta:
         model = Trade
@@ -94,6 +51,7 @@ class TradeSerializer(serializers.ModelSerializer):
             "stop_price",
             "exit_price",
             "target_price",
+            "exit_time",
             "entry_time",
             "status",
             "notes",
@@ -119,21 +77,25 @@ class TradeSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        tags = validated_data.pop("strategy_tags", [])
+        # Accept tags via strategy_tag_ids (mapped into 'strategy_tags' by source=)
+        # Only set tags if the field was present (even an empty list means "clear all")
+        sentinel = object()
+        tags = validated_data.pop("strategy_tags", sentinel)
         trade = Trade.objects.create(**validated_data)
-        if tags:
+        if tags is not sentinel:
             trade.strategy_tags.set(tags)
         return trade
 
     def update(self, instance, validated_data):
-        tags = validated_data.pop("strategy_tags", None)
+        # Detect whether client sent tags (even an empty list) to allow clearing
+        sentinel = object()
+        tags = validated_data.pop("strategy_tags", sentinel)
         for attr, val in validated_data.items():
             setattr(instance, attr, val)
         instance.save()
-        if tags is not None:
+        if tags is not sentinel:
             instance.strategy_tags.set(tags)
         return instance
-
 
 class JournalDaySerializer(serializers.ModelSerializer):
     trades = TradeSerializer(many=True, read_only=True)
@@ -142,23 +104,36 @@ class JournalDaySerializer(serializers.ModelSerializer):
     max_daily_loss_pct = serializers.FloatField(read_only=True)
     max_trades = serializers.IntegerField(read_only=True)
 
+    effective_equity = serializers.SerializerMethodField()
+    adjustments_total = serializers.SerializerMethodField()
+
     class Meta:
         model = JournalDay
-        fields = [
-            "id",
-            "date",
-            "day_start_equity",
-            "day_end_equity",
-            "notes",
-            "trades",
-            "realized_pnl",
-            "breach_daily_loss",
-            "max_daily_loss_pct",
-            "max_trades",
-        ]
+        fields = "__all__"
+        read_only_fields = ("user",)
+
+    def get_effective_equity(self, obj):
+        return float(obj.effective_equity)
+
+    def get_adjustments_total(self, obj):
+        return float(obj.adjustments_total)
 
 
 class UserSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserSettings
         fields = ["id", "dark_mode", "max_risk_per_trade_pct", "max_daily_loss_pct", "max_trades_per_day"]
+
+class AccountAdjustmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AccountAdjustment
+        fields = (
+            "id",
+            "journal_day",
+            "amount",
+            "reason",
+            "note",
+            "at_time",
+            "created_at",
+        )
+        read_only_fields = ("id", "created_at",)

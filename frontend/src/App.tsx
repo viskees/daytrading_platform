@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,15 @@ import {
   createTrade as apiCreateTrade,
   closeTrade as apiCloseTrade,
   createAttachment as apiCreateAttachment,
+  fetchSessionStatusToday,
+  fetchAccountSummary,
+  //--- equity & adjustments helpers ---
+  getTodayJournalDay,
+  patchDayStartEquity,
+  listAdjustments,
+  createAdjustment,
+  deleteAdjustment,
+  type AdjustmentReason,
 } from "@/lib/api";
 import JournalTab from "./components/JournalTab";
 import TradeEditor from "./components/TradeEditor";
@@ -166,8 +175,13 @@ function ImagePasteDrop({
 }
 
 function NewTradeDialog({
-  onCreated, onClose
-}: { onCreated: (t: Trade)=>void; onClose: ()=>void }) {
+  onCreated, onClose, kpiError, onGoRisk
+}: {
+  onCreated: (t: Trade)=>void;
+  onClose: ()=>void;
+  kpiError?: string | null;
+  onGoRisk?: ()=>void;
+}) {
   const [ticker, setTicker] = useState("");
   const [side, setSide] = useState<"LONG"|"SHORT">("LONG");
   const [entryPrice, setEntryPrice] = useState<number | "">("");
@@ -178,12 +192,14 @@ function NewTradeDialog({
   const [tags, setTags] = useState<string[]>([]);
   const [shots, setShots] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const toggleTag = (tag:string)=> setTags(t => t.includes(tag) ? t.filter(x=>x!==tag) : [...t, tag]);
 
   const submit = async () => {
     if (!ticker || !entryPrice) return;
     setSaving(true);
     try {
+      setErr(null);
       const trade = await apiCreateTrade({
         ticker,
         side,
@@ -200,14 +216,19 @@ function NewTradeDialog({
       }
       onCreated(trade);
       onClose();
-    } catch (e:any) {
-      console.error("Create trade failed:", e?.message, e);
-      alert(`Create trade failed: ${e?.message ?? "Unknown error"}`);
+      } catch (e:any) {
+      // Friendlier inline error; keep dialog open so user can adjust risk/inputs
+      const msg = String(e?.message ?? "Unknown error");
+      // Try to surface DRF detail if present in the message body
+      const m = msg.match(/—\s*(.*)$/); // looks for "— <detail json/text>"
+      setErr(m ? m[1] : msg);
+      console.error("Create trade failed:", msg);
     } finally { setSaving(false); }
   };
 
   return (
     <ModalShell title="New trade" onClose={onClose}>
+      {err && <div className="mb-3 text-sm text-red-600">{err}</div>}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div>
           <div className="text-xs mb-1">Ticker</div>
@@ -256,8 +277,20 @@ function NewTradeDialog({
       </div>
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button onClick={submit} disabled={saving || !ticker || !entryPrice}>Create</Button>
-      </div>
+        <Button
+          onClick={submit}
+          disabled={saving || !ticker || !entryPrice || !!kpiError}
+          title={kpiError ?? ""}
+        >
+          Create
+        </Button>
+       </div>
+       {kpiError && (
+        <div className="mt-2 text-xs text-amber-600">
+          {kpiError} &mdash; configure in{" "}
+          <button className="underline" onClick={onGoRisk}>Risk Settings</button>.
+        </div>
+      )}
     </ModalShell>
   );
 }
@@ -343,14 +376,38 @@ export default function App() {
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<any|null>(null);
 
-  // Mock stats for now (wire later)
-  const todaysPL = useMemo(() => 0.0, []);
-  const totalPL = useMemo(() => 0.0, []);
-  const totalEquity = useMemo(() => 0.0, []);
+  // Live account summary numbers
+  const [todaysPL, setTodaysPL] = useState(0);
+  const [totalPL, setTotalPL] = useState(0);
+  const [totalEquity, setTotalEquity] = useState(0);
 
-  // Risk meter: replace with backend calc later
-  const usedDailyRiskPct = 1.5;
+  // Risk meter: from backend status endpoint
+  const [usedDailyRiskPct, setUsedDailyRiskPct] = useState(0);
   const usedPctOfBudget = calcUsedPctOfBudget(usedDailyRiskPct, risk.maxDailyLossPct);
+  // When backend isn't ready (e.g., "User settings not configured.")
+  const [kpiError, setKpiError] = useState<string | null>(null);
+
+  // Centralized refresher for dashboard KPIs (risk + account summary)
+  const refreshDashboard = useCallback(async () => {
+    if (!authed) return;
+    try {
+      const st = await fetchSessionStatusToday();
+      setUsedDailyRiskPct(Number(st?.used_daily_risk_pct ?? 0));
+      setKpiError(null);
+    } catch {e: any} {
+    const msg = String(e?.message ?? "");
+      // Bubble up a friendly note if settings aren’t configured yet
+      if (msg.includes("User settings not configured")) {
+        setKpiError("User settings not configured.");
+      }
+    }
+    try {
+      const acct = await fetchAccountSummary();
+      setTodaysPL(Number(acct?.pl_today ?? 0));
+      setTotalPL(Number(acct?.pl_total ?? 0));
+      setTotalEquity(Number(acct?.equity_today ?? acct?.equity_last_close ?? 0));
+    } catch {}
+  }, [authed]);
 
   // theme → DOM + localStorage
   useEffect(() => {
@@ -375,7 +432,7 @@ export default function App() {
     runDevTests();
   }, []);
 
-  // after login: fetch server settings + open trades
+  // after login: fetch server settings + open trades + initial KPIs
   useEffect(() => {
     if (!authed) return;
     (async () => {
@@ -389,8 +446,24 @@ export default function App() {
           setOpenTrades(trades as Trade[]);
         }
       } catch {}
+      await refreshDashboard();
     })();
-  }, [authed]);
+    }, [authed, refreshDashboard]);
+
+    // Keep KPIs fresh: poll + refresh when tab becomes visible
+    useEffect(() => {
+      if (!authed) return;
+      let handle: any;
+      const pull = () => { void refreshDashboard(); };
+      pull(); // immediate
+      handle = setInterval(pull, 20000); // every 20s (tweak as needed)
+      const onVis = () => { if (document.visibilityState === "visible") pull(); };
+      document.addEventListener("visibilitychange", onVis);
+      return () => {
+        clearInterval(handle);
+        document.removeEventListener("visibilitychange", onVis);
+      };
+  }, [authed, refreshDashboard]);
 
   /* ---------- Auth Landing ---------- */
   function Unauthed() {
@@ -493,6 +566,14 @@ export default function App() {
           </div>
           <Progress value={usedPctOfBudget} />
         </div>
+        {kpiError && (
+          <div className="mt-3 text-xs text-amber-600">
+            {kpiError} &mdash; set your account/risk in <button
+              className="underline"
+              onClick={() => setPage("risk")}
+            >Risk Settings</button>.
+          </div>
+        )}
         <p className="mt-3 text-xs text-muted-foreground">
           Will sync with <code>/api/risk-policy</code> and <code>/api/pnl/daily</code>.
         </p>
@@ -519,8 +600,13 @@ export default function App() {
           </li>
         </ul>
         <p className="mt-3 text-xs text-muted-foreground">
-          Endpoints: <code>/api/pnl/daily</code>, <code>/api/pnl/total</code>, <code>/api/equity</code>.
+          Source: <code>/api/journal/trades/account/summary/</code>
         </p>
+        {kpiError && (
+          <p className="mt-1 text-xs text-amber-600">
+            Missing account/risk settings &mdash; values shown as 0 until configured.
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -546,7 +632,7 @@ export default function App() {
           <Stat label="Worst R" value={sessionStats.worstR.toFixed(2)} />
           <Stat label="Max DD" value={`${sessionStats.maxDD.toFixed(2)}%`} />
         </div>
-        <p className="mt-3 text-xs text-muted-foreground">Endpoint: <code>/api/stats/session</code>.</p>
+        <p className="mt-3 text-xs text-muted-foreground">Source: <code>/api/journal/trades/status/today/</code></p>
       </CardContent>
     </Card>
   );
@@ -566,6 +652,8 @@ export default function App() {
      const fresh = await apiFetchOpenTrades();
      if (Array.isArray(fresh)) setOpenTrades(fresh as Trade[]);
    } catch { /* ignore – local optimistic update already applied */ }
+   // refresh KPIs after edit
+   void refreshDashboard();
  };
 
   const OpenTrades = () => (
@@ -699,42 +787,214 @@ export default function App() {
     </div>
   );
 
-  const RiskSettings = () => (
-    <Card>
-      <CardContent className="p-4 space-y-4">
-        <h2 className="font-bold">Risk Settings</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <div className="text-xs text-muted-foreground mb-1">Max risk per trade (%)</div>
-            <Input
-              type="number"
-              step="0.1"
-              value={risk.maxRiskPerTradePct}
-              onChange={(e) => setRisk({ ...risk, maxRiskPerTradePct: Number(e.target.value) })}
-            />
+  const RiskSettings = () => {
+    // ---- Equity state (scoped to Risk page) ----
+    const [loading, setLoading] = useState(true);
+    const [err, setErr] = useState<string | null>(null);
+    const [journalDayId, setJournalDayId] = useState<number | null>(null);
+    const [dayStartEquity, setDayStartEquity] = useState<number>(0);
+    const [effectiveEquity, setEffectiveEquity] = useState<number>(0);
+    const [adjustmentsTotal, setAdjustmentsTotal] = useState<number>(0);
+    // adjustments UI
+    const [rows, setRows] = useState<any[]>([]);
+    const [adjAmount, setAdjAmount] = useState<number>(0);
+    const [adjReason, setAdjReason] = useState<AdjustmentReason>("DEPOSIT");
+    const [adjNote, setAdjNote] = useState<string>("");
+    const [saving, setSaving] = useState(false);
+
+    const load = useCallback(async () => {
+      if (!authed) return;
+      setLoading(true); setErr(null);
+      try {
+        const d = await getTodayJournalDay();
+        if (!d) { setErr("No Journal Day for today — open Journal and create one."); return; }
+        setJournalDayId(d.id);
+        setDayStartEquity(Number(d.day_start_equity || 0));
+        setEffectiveEquity(Number(d.effective_equity || 0));
+        setAdjustmentsTotal(Number(d.adjustments_total || 0));
+        const list = await listAdjustments(d.id);
+        setRows(list);
+      } catch (e:any) {
+        setErr(e?.message ?? "Failed to load equity");
+      } finally {
+        setLoading(false);
+      }
+    }, [authed]);
+
+    useEffect(() => { void load(); }, [load]);
+
+    const saveStart = async () => {
+      if (!journalDayId) return;
+      setSaving(true); setErr(null);
+      try {
+        const updated = await patchDayStartEquity(journalDayId, Number(dayStartEquity));
+        setEffectiveEquity(Number(updated.effective_equity || 0));
+        setAdjustmentsTotal(Number(updated.adjustments_total || 0));
+        // refresh top-of-page KPIs too
+        await refreshDashboard();
+      } catch (e:any) {
+        setErr(e?.message ?? "Failed to save day start equity");
+      } finally { setSaving(false); }
+    };
+
+    const addAdj = async () => {
+      if (!journalDayId) return;
+      setErr(null);
+      try {
+        await createAdjustment({
+          journal_day: journalDayId,
+          amount: Number(adjAmount),
+          reason: adjReason,
+          note: adjNote || "",
+        });
+        setAdjAmount(0); setAdjNote("");
+        await load();
+        await refreshDashboard();
+      } catch (e:any) {
+        setErr(e?.message ?? "Failed to add adjustment");
+      }
+    };
+
+    const delAdj = async (id: number) => {
+      setErr(null);
+      try {
+        await deleteAdjustment(id);
+        await load();
+        await refreshDashboard();
+      } catch (e:any) {
+        setErr(e?.message ?? "Failed to delete adjustment");
+      }
+    };
+
+    return (
+      <Card>
+        <CardContent className="p-4 space-y-6">
+          <h2 className="font-bold">Risk Settings</h2>
+          {/* existing risk inputs */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Max risk per trade (%)</div>
+              <Input
+                type="number"
+                step="0.1"
+                value={risk.maxRiskPerTradePct}
+                onChange={(e) => setRisk({ ...risk, maxRiskPerTradePct: Number(e.target.value) })}
+              />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Max daily loss (%)</div>
+              <Input
+                type="number"
+                step="0.1"
+                value={risk.maxDailyLossPct}
+                onChange={(e) => setRisk({ ...risk, maxDailyLossPct: Number(e.target.value) })}
+              />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Max trades per day</div>
+              <Input
+                type="number"
+                value={risk.maxTradesPerDay}
+                onChange={(e) => setRisk({ ...risk, maxTradesPerDay: Number(e.target.value) })}
+              />
+            </div>
           </div>
-          <div>
-            <div className="text-xs text-muted-foreground mb-1">Max daily loss (%)</div>
-            <Input
-              type="number"
-              step="0.1"
-              value={risk.maxDailyLossPct}
-              onChange={(e) => setRisk({ ...risk, maxDailyLossPct: Number(e.target.value) })}
-            />
+          <div className="text-sm text-muted-foreground">Will POST to <code>/api/risk-policy</code>.</div>
+
+          {/* --- Equity section --- */}
+          <div className="mt-2 rounded-2xl border border-neutral-700 p-4">
+            <h3 className="text-lg font-semibold mb-3">Equity</h3>
+            {loading ? (
+              <div className="text-sm">Loading equity…</div>
+            ) : (
+              <>
+                {err && <div className="mb-3 text-sm text-red-600">{err}</div>}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                  <label className="block">
+                    <span className="text-xs text-muted-foreground">Day start equity (today)</span>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={dayStartEquity}
+                      onChange={(e)=>setDayStartEquity(Number(e.target.value))}
+                    />
+                  </label>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Effective equity</div>
+                    <div className="text-xl font-semibold">{effectiveEquity.toFixed(2)}</div>
+                    <div className="text-xs text-muted-foreground">
+                      Includes realized P/L + adjustments ({adjustmentsTotal.toFixed(2)})
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button onClick={saveStart} disabled={saving || !journalDayId}>
+                      {saving ? "Saving…" : "Save"}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Adjustments */}
+                <div className="mt-5">
+                  <h4 className="font-medium mb-2">Adjustments</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end mb-3">
+                    <label className="block md:col-span-2">
+                      <span className="text-xs text-muted-foreground">Amount</span>
+                      <Input type="number" step="0.01" value={adjAmount}
+                             onChange={(e)=>setAdjAmount(Number(e.target.value))}/>
+                    </label>
+                    <label className="block">
+                      <span className="text-xs text-muted-foreground">Reason</span>
+                      <select
+                        className="mt-1 w-full rounded-xl bg-background border p-2"
+                        value={adjReason}
+                        onChange={(e)=>setAdjReason(e.target.value as AdjustmentReason)}
+                      >
+                        <option value="DEPOSIT">Deposit</option>
+                        <option value="WITHDRAWAL">Withdrawal</option>
+                        <option value="FEE">Fee</option>
+                        <option value="CORRECTION">Correction</option>
+                      </select>
+                    </label>
+                    <label className="block md:col-span-2">
+                      <span className="text-xs text-muted-foreground">Note</span>
+                      <Input value={adjNote} onChange={(e)=>setAdjNote(e.target.value)} placeholder="Optional"/>
+                    </label>
+                    <div className="md:col-span-5">
+                      <Button onClick={addAdj} disabled={!journalDayId}>Add adjustment</Button>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="text-muted-foreground">
+                        <tr><th className="text-left py-2">When</th><th className="text-left">Reason</th><th className="text-right">Amount</th><th className="text-left">Note</th><th/></tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r) => (
+                          <tr key={r.id} className="border-t">
+                            <td className="py-2">{new Date(r.at_time).toLocaleString()}</td>
+                            <td>{r.reason}</td>
+                            <td className="text-right">{Number(r.amount).toFixed(2)}</td>
+                            <td>{r.note}</td>
+                            <td className="text-right">
+                              <Button variant="outline" size="sm" onClick={() => delAdj(r.id)}>Delete</Button>
+                            </td>
+                          </tr>
+                        ))}
+                        {rows.length === 0 && (
+                          <tr><td colSpan={5} className="py-3 text-muted-foreground">No adjustments yet.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
-          <div>
-            <div className="text-xs text-muted-foreground mb-1">Max trades per day</div>
-            <Input
-              type="number"
-              value={risk.maxTradesPerDay}
-              onChange={(e) => setRisk({ ...risk, maxTradesPerDay: Number(e.target.value) })}
-            />
-          </div>
-        </div>
-        <div className="text-sm text-muted-foreground">Will POST to <code>/api/risk-policy</code>.</div>
-      </CardContent>
-    </Card>
-  );
+        </CardContent>
+      </Card>
+    );
+  };
 
   /* ---------- Page router ---------- */
   const renderPage = () => {
@@ -827,15 +1087,23 @@ export default function App() {
                   return [t, ...nonMocks];
                 });
               }
+              // refresh KPIs after create
+              void refreshDashboard();
             })();
           }}
+          kpiError={kpiError}
+          onGoRisk={() => setPage("risk")}
         />
       )}
       {closing && (
         <CloseTradeDialog
           trade={closing}
           onClose={() => setClosing(null)}
-          onClosed={(id) => setOpenTrades(prev => prev.filter(t => t.id !== id))}
+          onClosed={(id) => {
+            setOpenTrades(prev => prev.filter(t => t.id !== id));
+            // refresh KPIs after close
+            void refreshDashboard();
+          }}
         />
       )}
       {editOpen && editing && (

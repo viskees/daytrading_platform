@@ -1,5 +1,8 @@
 from django.db import models
 from django.conf import settings
+from decimal import Decimal
+from django.utils import timezone
+
 
 class UserSettings(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="settings")
@@ -33,6 +36,32 @@ class JournalDay(models.Model):
     class Meta:
         unique_together = ("user", "date")
         ordering = ["-date"]
+
+    @property
+    def adjustments_total(self) -> Decimal:
+        # Sum of all adjustments linked to this JournalDay (nullable until model exists)
+        total = Decimal("0")
+        if hasattr(self, "adjustments"):
+            for a in self.adjustments.all():
+                total += a.amount
+        return total
+
+    @property
+    def effective_equity(self) -> Decimal:
+        """
+        Effective equity used by risk checks:
+        day_start_equity + realized P/L from CLOSED trades + Σ adjustments_today
+        """
+        start = Decimal(str(self.day_start_equity or 0))
+        realized = Decimal("0")
+        for t in self.trades.filter(status="CLOSED"):
+            if t.exit_price is None or t.entry_price is None or t.quantity is None:
+                continue
+            move = Decimal(str(t.exit_price)) - Decimal(str(t.entry_price))
+            if t.side == "SHORT":
+                move = -move
+            realized += move * Decimal(str(t.quantity))
+        return start + realized + self.adjustments_total
 
     @property
     def realized_pnl(self):
@@ -98,7 +127,7 @@ class Trade(models.Model):
     exit_price = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
     target_price = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
     entry_time = models.DateTimeField()
-    exit_time  = models.DateTimeField(null=True, blank=True)
+    exit_time = models.DateTimeField(null=True, blank=True, db_index=True)
     status = models.CharField(max_length=6, choices=STATUS_CHOICES, default="OPEN")
     notes = models.TextField(blank=True)
 
@@ -110,23 +139,76 @@ class Trade(models.Model):
 
     @property
     def risk_per_share(self):
-        if self.stop_price is not None:
-
-            return round(abs(float(self.entry_price) - float(self.stop_price)), 4)
-        return 0.0
+        if self.stop_price is None:
+            return None
+        return float(abs(self.entry_price - self.stop_price))
 
     @property
     def r_multiple(self):
-        if self.risk_per_share and self.exit_price is not None:
-            per_share = (float(self.exit_price) - float(self.entry_price)) * (1 if self.side == "LONG" else -1)
-            return round(per_share / float(self.risk_per_share), 2)
-        return 0.0
+        if self.stop_price is None or self.exit_price is None:
+            return None
+        move = float(self.exit_price - self.entry_price)
+        if self.side == "SHORT":
+            move = -move
+        rps = self.risk_per_share or 0.0
+        return (move / rps) if rps else None
 
     def __str__(self):
         return f"{self.ticker} {self.side} x{self.quantity}"
+
+    def close(self, *, exit_price=None, exit_time=None):
+        """Helper for consistent close semantics."""
+        from django.utils import timezone
+        if self.status == "CLOSED":
+            return
+        if exit_price is not None:
+            self.exit_price = exit_price
+        if not self.exit_time:
+            self.exit_time = exit_time or timezone.now()
+        self.status = "CLOSED"
+        self.save(update_fields=["exit_price", "exit_time", "status"])
 
 class Attachment(models.Model):
     trade = models.ForeignKey(Trade, related_name="attachments", on_delete=models.CASCADE)
     image = models.ImageField(upload_to="journal_attachments/")
     caption = models.CharField(max_length=128, blank=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
+
+class AccountAdjustment(models.Model):
+    REASON_DEPOSIT = "DEPOSIT"
+    REASON_WITHDRAWAL = "WITHDRAWAL"
+    REASON_FEE = "FEE"
+    REASON_CORRECTION = "CORRECTION"
+    REASON_CHOICES = [
+        (REASON_DEPOSIT, "Deposit"),
+        (REASON_WITHDRAWAL, "Withdrawal"),
+        (REASON_FEE, "Fee"),
+        (REASON_CORRECTION, "Correction"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="account_adjustments",
+    )
+    journal_day = models.ForeignKey(
+        JournalDay,
+        on_delete=models.CASCADE,
+        related_name="adjustments",
+    )
+    # Keep precision consistent with your day_start_equity/day_end_equity (12,2)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    reason = models.CharField(max_length=24, choices=REASON_CHOICES)
+    note = models.CharField(max_length=256, blank=True)
+    at_time = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-at_time", "-id")
+
+    def __str__(self):
+        sign = "+" if self.amount is not None and self.amount >= 0 else ""
+        jd = getattr(self.journal_day, "date", "?")
+        return f"{jd} {self.reason} {sign}{self.amount}"
+
+
