@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import environ
+from datetime import timedelta
 
 # --------------------------------------------------------------------------------------
 # Base
@@ -49,6 +50,9 @@ INSTALLED_APPS = [
     # Local
     'journal',
     'accounts',
+
+    # DRF
+    'rest_framework_simplejwt.token_blacklist',
 ]
 
 MIDDLEWARE = [
@@ -83,9 +87,11 @@ ASGI_APPLICATION = 'core.asgi.application'
 
 from datetime import timedelta
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
-    "LEEWAY": 120,  # tolerate 2 min skew in dev
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),   # short access
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=14),     # 1–2 weeks
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "LEEWAY": 120,
 }
 
 # --------------------------------------------------------------------------------------
@@ -175,6 +181,8 @@ SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 # Build from hosts that actually hit Django via HTTPS
 CSRF_TRUSTED_ORIGINS = [f"https://{h}" for h in ALLOWED_HOSTS if h != '*']
+CSRF_COOKIE_SAMESITE = "Lax"        # or "None" (requires HTTPS)
+# When using SameSite=None you must be on HTTPS everywhere
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 

@@ -353,50 +353,66 @@ async function getOrCreateTodayDayId(): Promise<number> {
 // --- Equity & Adjustments API (single source of truth) ---
 export type AdjustmentReason = 'DEPOSIT' | 'WITHDRAWAL' | 'FEE' | 'CORRECTION';
 
-// Read the same token your app already stores (cover common keys)
-function getAccessToken(): string | null {
-  try {
-    // Case 1: token is stored as plain string
-    const direct = localStorage.getItem('access') || localStorage.getItem('access_token');
-    if (direct && direct.startsWith('ey')) return direct;
+import { getAccessToken, setAccessToken } from "./auth";
 
-    // Case 2: stored as JSON object { "refresh": "...", "access": "..." }
-    const raw = localStorage.getItem('access');
-    if (raw && raw.startsWith('{')) {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.access) return parsed.access;
-    }
-
-    // Case 3: fallback to sessionStorage
-    const s = sessionStorage.getItem('access');
-    if (s && s.startsWith('ey')) return s;
-  } catch (e) {
-    console.warn('getAccessToken failed:', e);
-  }
-  return null;
-}
-
+// optional helper
 function getCookie(name: string): string | null {
-  if (typeof document === 'undefined') return null;
-  const m = document.cookie.match(new RegExp('(^|; )' + name.replace(/[-\\^$*+?.()|[\\]{}]/g, '\\$&') + '=([^;]*)'));
+  const m = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
   return m ? decodeURIComponent(m[2]) : null;
 }
 
-export async function authedFetch(url: string, init: RequestInit = {}) {
+export async function authedFetch(
+  url: string,
+  init: RequestInit = {},
+  _retried = false
+): Promise<Response> {
+  const headers: Record<string, string> = { ...(init.headers as any) };
+
+  // Bearer access (in-memory)
   const token = getAccessToken();
-  const headers: Record<string, string> = {
-    ...(init.headers as Record<string, string> | undefined),
-  };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const method = (init.method || 'GET').toUpperCase();
-  if (method !== 'GET' && method !== 'HEAD') {
-    headers['X-CSRFToken'] = headers['X-CSRFToken'] || getCookie('csrftoken') || '';
-    if (!headers['Content-Type'] && init.body && !(init.body instanceof FormData)) {
-      headers['Content-Type'] = 'application/json';
+
+  // CSRF on non-GET/HEAD
+  const method = (init.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    headers["X-CSRFToken"] = headers["X-CSRFToken"] || getCookie("csrftoken") || "";
+    if (!headers["Content-Type"] && init.body && !(init.body instanceof FormData)) {
+      headers["Content-Type"] = "application/json";
     }
   }
-  const res = await fetch(url, { ...init, headers, credentials: 'include' });
-  if (!res.ok) throw new Error(await res.text());
+
+  // IMPORTANT: include cookies so the HttpOnly refresh cookie is sent
+  let res = await fetch(url, { ...init, headers, credentials: "include" });
+
+  // ---- 401 auto-refresh
+  if (res.status === 401 && !_retried) {
+    const rr = await fetch("/api/auth/jwt/refresh/", {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-CSRFToken": getCookie("csrftoken") || "" }, // harmless if not needed
+    });
+
+    if (rr.ok) {
+      const j = await rr.json(); // { access }
+      if (j?.access) {
+        setAccessToken(j.access);
+        headers.Authorization = `Bearer ${j.access}`;
+        // retry original once
+        res = await fetch(url, { ...init, headers, credentials: "include" });
+      }
+    } else {
+      // refresh failed: clear and bubble up so UI can redirect to login
+      setAccessToken(null);
+      throw new Error("Unauthorized; please log in again.");
+    }
+  }
+  // ---------------------------------------------------------------
+
+  if (!res.ok) {
+    // surface server error text to callers
+    const text = await res.text().catch(() => `${res.status}`);
+    throw new Error(text || `HTTP ${res.status}`);
+  }
   return res;
 }
 

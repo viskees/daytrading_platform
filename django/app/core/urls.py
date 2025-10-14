@@ -4,6 +4,8 @@ from django.urls import path, include, re_path
 from django.shortcuts import render
 from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
 from accounts.auth import EmailOnlyTokenView
+from django.views.decorators.csrf import ensure_csrf_cookie
+from accounts.auth import CookieTokenObtainPairView, CookieTokenRefreshView, LogoutView
 
 # Import the concrete list of patterns explicitly
 from two_factor.urls import urlpatterns as tf_urls
@@ -22,9 +24,9 @@ urlpatterns = [
     path("", include(tf_urls, namespace="two_factor")),
 
     # JWT
-    path("api/auth/jwt/token/", EmailOnlyTokenView.as_view(), name="token_obtain_pair"),
-    path("api/auth/jwt/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
-    path("api/auth/jwt/verify/", TokenVerifyView.as_view(), name="token_verify"),
+    path("api/auth/jwt/token/", CookieTokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("api/auth/jwt/refresh/", CookieTokenRefreshView.as_view(), name="token_refresh"),
+    path("api/auth/logout/", LogoutView.as_view(), name="logout"),
 
     # Apps
     path("api/auth/", include("accounts.urls")),
