@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +21,8 @@ import {
   fetchSessionStatusToday,
   fetchAccountSummary,
   //--- equity & adjustments helpers ---
-  getTodayJournalDay,
+  //getTodayJournalDay,
+  getOrCreateJournalDay,
   patchDayStartEquity,
   listAdjustments,
   createAdjustment,
@@ -31,7 +32,7 @@ import {
 import JournalTab from "./components/JournalTab";
 import TradeEditor from "./components/TradeEditor";
 import { updateTrade } from "./lib/api";
-
+import { initAccessTokenFromRefresh } from "@/lib/auth";
 
 /* =========================
    Types (match Django API)
@@ -371,6 +372,17 @@ export default function App() {
   const [openTrades, setOpenTrades] = useState<Trade[]>(MOCK_OPEN_TRADES);
   const [dark, setDark] = useState<boolean>(getInitialDark());
   const [authed, setAuthed] = useState<boolean>(hasToken());
+
+  // Try to mint an access token from refresh cookie on load (if not already authed)
+  useEffect(() => {
+    (async () => {
+      if (!authed) {
+        const ok = await initAccessTokenFromRefresh().catch(() => false);
+        if (ok) setAuthed(true);
+      }
+    })();
+  }, [authed]);
+
   const [showNew, setShowNew] = useState(false);
   const [closing, setClosing] = useState<Trade | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -394,7 +406,7 @@ export default function App() {
       const st = await fetchSessionStatusToday();
       setUsedDailyRiskPct(Number(st?.used_daily_risk_pct ?? 0));
       setKpiError(null);
-    } catch {e: any} {
+    } catch (e: any) {
     const msg = String(e?.message ?? "");
       // Bubble up a friendly note if settings aren’t configured yet
       if (msg.includes("User settings not configured")) {
@@ -806,14 +818,19 @@ export default function App() {
       if (!authed) return;
       setLoading(true); setErr(null);
       try {
-        const d = await getTodayJournalDay();
-        if (!d) { setErr("No Journal Day for today — open Journal and create one."); return; }
-        setJournalDayId(d.id);
+        // Ensure today's journal day exists (creates it if missing)
+        const d = await getOrCreateJournalDay(new Date().toISOString().slice(0, 10));
+        if (!d || !Number.isInteger(d.id)) {
+          throw new Error("Failed to ensure today's Journal Day");
+        }
+        const id = Number(d.id);
+        setJournalDayId(id);
         setDayStartEquity(Number(d.day_start_equity || 0));
         setEffectiveEquity(Number(d.effective_equity || 0));
         setAdjustmentsTotal(Number(d.adjustments_total || 0));
-        const list = await listAdjustments(d.id);
-        setRows(list);
+        // Only fetch adjustments when we have a valid id
+        const list = await listAdjustments(id);
+        setRows(Array.isArray(list) ? list : []);
       } catch (e:any) {
         setErr(e?.message ?? "Failed to load equity");
       } finally {
@@ -960,7 +977,7 @@ export default function App() {
                       <Input value={adjNote} onChange={(e)=>setAdjNote(e.target.value)} placeholder="Optional"/>
                     </label>
                     <div className="md:col-span-5">
-                      <Button onClick={addAdj} disabled={!journalDayId}>Add adjustment</Button>
+                      <Button onClick={addAdj} disabled={!journalDayId || journalDayId <= 0}>Add adjustment</Button>
                     </div>
                   </div>
 

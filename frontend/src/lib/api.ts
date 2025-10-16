@@ -1,5 +1,5 @@
 const API_BASE = "/api";
-type TokenPair = { access: string; refresh: string };
+type TokenPair = { access: string; refresh?: string };
 type ApiTrade = {
   id: number;
   journal_day: number;
@@ -52,6 +52,7 @@ function normalizeTrade(x: any) {
   } as const;
 }
 
+// Legacy helpers (kept for temporary compatibility with any leftover callers)
 function getToken(): TokenPair | null {
   try { const s = localStorage.getItem("jwt"); return s ? JSON.parse(s) : null; } catch { return null; }
 }
@@ -64,44 +65,29 @@ function isFormData(x: any): x is FormData {
   return typeof FormData !== "undefined" && x instanceof FormData;
 }
 
+// Delegate all API calls through authedFetch (handles JWT auto-refresh + cookies)
 async function apiFetch(path: string, opts: RequestInit = {}) {
-  const isForm = opts.body instanceof FormData;
-  const tok = getToken(); // your existing helper
-
-  const headers: Record<string, string> = {
-    ...(tok ? { Authorization: `Bearer ${tok.access}` } : {}),
-    // IMPORTANT: don't set Content-Type for FormData; the browser will set boundary
-    ...(!isForm ? { "Content-Type": "application/json" } : {}),
-    ...(opts.headers as any),
-  };
-
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...opts,
-    headers,
-    credentials: "include",
-  });
-
-  if (!res.ok) {
-    let details = "";
-    try { details = await res.text(); } catch {}
-    throw new Error(`${res.status} ${res.statusText}${details ? ` — ${details}` : ""}`);
-  }
-  return res;
+  return authedFetch(`${API_BASE}${path}`, opts);
 }
 
 export async function login(email: string, password: string) {
+  // Backend sets the refresh as HttpOnly cookie; body returns { access }
   const res = await fetch(`${API_BASE}/auth/jwt/token/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
+    credentials: "include",
   });
   if (!res.ok) {
     let msg = ""; try { msg = await res.text(); } catch {}
     throw new Error(`Login failed: ${msg || res.statusText}`);
   }
-  const tok = (await res.json()) as TokenPair;
-  setToken(tok);
-  return tok;
+  const j = (await res.json()) as { access?: string; refresh?: string };
+  if (!j?.access) throw new Error("Login failed: no access token returned");
+  // In-memory access for the app, keep localStorage only as a temporary bridge
+  setAccessToken(j.access);
+  setToken({ access: j.access }); // TODO: remove once all code paths use getAccessToken()
+  return { access: j.access };
 }
 
 export async function register(email: string, password: string) {
@@ -176,12 +162,17 @@ export async function fetchClosedTrades(params?: { from?: string; to?: string; p
   }
 }
 
-// export a tiny helper for gating if you want it
+// Gating helpers
 export function hasToken() {
-  return !!localStorage.getItem("jwt");
+  // Prefer in-memory access; fall back to legacy localStorage for now
+  return !!getAccessToken() || !!localStorage.getItem("jwt");
 }
-export function logout() {
-  localStorage.removeItem("jwt");
+export async function logout() {
+  try {
+    await fetch(`${API_BASE}/auth/logout/`, { method: "POST", credentials: "include" });
+  } catch {}
+  setAccessToken(null);        // drop in-memory access
+  localStorage.removeItem("jwt"); // drop legacy cache
 }
 
 export async function fetchSessionStatusToday() {
@@ -416,11 +407,51 @@ export async function authedFetch(
   return res;
 }
 
+// ---- Journal Day helpers ----
+export type JournalDay = {
+  id: number;
+  date: string;
+  day_start_equity?: number | string;
+  effective_equity?: number | string;
+  adjustments_total?: number | string;
+};
+
+export async function getJournalDayByDate(date: string): Promise<JournalDay | null> {
+  const r = await authedFetch(`/api/journal/days/?date=${encodeURIComponent(date)}`);
+  if (!r.ok) return null;
+  const j = await r.json();
+  // Your API might return a single object or an array; normalize:
+  return Array.isArray(j) ? (j[0] ?? null) : (j ?? null);
+}
+
+export async function createJournalDay(date: string): Promise<JournalDay> {
+  const r = await authedFetch(`/api/journal/days/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ date }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getOrCreateJournalDay(date: string): Promise<JournalDay> {
+  const found = await getJournalDayByDate(date);
+  if (found?.id) return found;
+  return await createJournalDay(date);
+}
+
+// ---- Adjustments helpers (with guard) ----
+export async function listAdjustments(journalDayId?: number | null) {
+  if (!Number.isInteger(journalDayId as number) || (journalDayId as number) <= 0) return [];
+  const res = await authedFetch(`/api/journal/account/adjustments/?journal_day=${journalDayId}`);
+  return res.json();
+}
+
 export async function getTodayJournalDay(dateISO?: string) {
-  const date = dateISO ?? new Date().toISOString().slice(0, 10);
-  const res = await authedFetch(`/api/journal/days/?date=${encodeURIComponent(date)}`);
-  const data = await res.json();
-  return Array.isArray(data) ? data[0] : data;
+ const date = dateISO ?? new Date().toISOString().slice(0, 10);
+ const res = await authedFetch(`/api/journal/days/?date=${encodeURIComponent(date)}`);
+ const data = await res.json();
+ return Array.isArray(data) ? data[0] : data;
 }
 
 export async function patchDayStartEquity(id: number, dayStartEquity: number) {
@@ -431,17 +462,15 @@ export async function patchDayStartEquity(id: number, dayStartEquity: number) {
   return res.json();
 }
 
-export async function listAdjustments(journalDayId: number) {
-  const res = await authedFetch(`/api/journal/account/adjustments/?journal_day=${journalDayId}`);
-  return res.json();
-}
-
 export async function createAdjustment(input: {
   journal_day: number;
   amount: number;
   reason: AdjustmentReason;
   note?: string;
 }) {
+  if (!Number.isInteger(input?.journal_day) || input.journal_day <= 0) {
+    throw new Error("journal_day is required");
+  }
   const res = await authedFetch(`/api/journal/account/adjustments/`, {
     method: 'POST',
     body: JSON.stringify(input),
