@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +21,7 @@ import {
   fetchSessionStatusToday,
   fetchAccountSummary,
   //--- equity & adjustments helpers ---
-  //getTodayJournalDay,
+  getTodayJournalDay,
   getOrCreateJournalDay,
   patchDayStartEquity,
   listAdjustments,
@@ -68,6 +68,16 @@ export type Ticker = {
 
 export type UserSettings = { theme: "light" | "dark" };
 
+// Session stats (today) as returned by /api/journal/trades/status/today/
+type SessionStatus = {
+  trades: number;
+  win_rate: number;   // percent, e.g. 66.7
+  avg_r: number;
+  best_r: number;
+  worst_r: number;
+  max_dd_pct: number; // percent, e.g. -1.7
+};
+
 /* =========================
    Helpers + Tests
    ========================= */
@@ -84,7 +94,7 @@ export function getInitialDark(): boolean {
     const stored = localStorage.getItem(THEME_KEY);
     if (stored === "dark") return true;
     if (stored === "light") return false;
-  } catch {}
+  } catch { }
   if (typeof window !== "undefined" && window.matchMedia) {
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
   }
@@ -114,8 +124,8 @@ function runDevTests() {
   console.assert(calcUsedPctOfBudget(300, 600) === 50, "proportional large numbers");
 }
 
-function ModalShell({ title, onClose, children }:{
-  title: string; onClose: ()=>void; children: ReactNode;
+function ModalShell({ title, onClose, children }: {
+  title: string; onClose: () => void; children: ReactNode;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -150,7 +160,7 @@ function ImagePasteDrop({
     <div
       tabIndex={0}
       onDrop={onDrop}
-      onDragOver={(e)=>e.preventDefault()}
+      onDragOver={(e) => e.preventDefault()}
       onPaste={onPaste}
       className="border border-dashed rounded-xl p-3 text-xs text-muted-foreground focus:outline-none focus:ring-2"
     >
@@ -176,15 +186,19 @@ function ImagePasteDrop({
 }
 
 function NewTradeDialog({
-  onCreated, onClose, kpiError, onGoRisk
+  onCreated, onClose, kpiError, onGoRisk,
+  perTradeCap$, dailyRemaining$, guardsEnabled
 }: {
-  onCreated: (t: Trade)=>void;
-  onClose: ()=>void;
+  onCreated: (t: Trade) => void;
+  onClose: () => void;
   kpiError?: string | null;
-  onGoRisk?: ()=>void;
+  onGoRisk?: () => void;
+  guardsEnabled: boolean;
+  perTradeCap$: number;
+  dailyRemaining$: number;
 }) {
   const [ticker, setTicker] = useState("");
-  const [side, setSide] = useState<"LONG"|"SHORT">("LONG");
+  const [side, setSide] = useState<"LONG" | "SHORT">("LONG");
   const [entryPrice, setEntryPrice] = useState<number | "">("");
   const [stopLoss, setStopLoss] = useState<number | "">("");
   const [target, setTarget] = useState<number | "">("");
@@ -194,13 +208,45 @@ function NewTradeDialog({
   const [shots, setShots] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const toggleTag = (tag:string)=> setTags(t => t.includes(tag) ? t.filter(x=>x!==tag) : [...t, tag]);
+  const toggleTag = (tag: string) => setTags(t => t.includes(tag) ? t.filter(x => x !== tag) : [...t, tag]);
+
+
+  // $ risk for current inputs (to stop)
+  const currentRisk$ = useMemo(() => {
+    if (!size || !entryPrice || !stopLoss) return 0;
+    const ep = Number(entryPrice), sp = Number(stopLoss), q = Number(size);
+    const perUnit = side === "LONG" ? Math.max(0, ep - sp) : Math.max(0, sp - ep);
+    return perUnit * q;
+  }, [side, entryPrice, stopLoss, size]);
+  const exceedsPerTrade = currentRisk$ > perTradeCap$ + 1e-9;
+  const exceedsDaily = currentRisk$ > dailyRemaining$ + 1e-9;
+
 
   const submit = async () => {
     if (!ticker || !entryPrice) return;
+    // Guards (require size & stop to compute risk)
+    if (!size || !stopLoss) {
+      setErr("Size and Stop are required to validate risk.");
+      return;
+    }
+    if (exceedsPerTrade) {
+      setErr(`This trade risks $${currentRisk$.toFixed(2)}, above your per-trade cap of $${perTradeCap$.toFixed(2)}.`);
+      return;
+    }
+    if (exceedsDaily) {
+      setErr(`This trade would exceed today's remaining risk budget ($${dailyRemaining$.toFixed(2)}).`);
+      return;
+    }
     setSaving(true);
     try {
       setErr(null);
+      // Guards only when enabled (we have a valid E0 set)
+      if (guardsEnabled && exceedsPerTrade) {
+        throw new Error(`This trade risks $${currentRisk$.toFixed(2)}, above your per-trade cap of $${perTradeCap$.toFixed(2)}.`);
+      }
+      if (guardsEnabled && exceedsDaily) {
+        throw new Error(`This trade would exceed today's remaining risk budget ($${dailyRemaining$.toFixed(2)}).`);
+      }
       const trade = await apiCreateTrade({
         ticker,
         side,
@@ -217,7 +263,7 @@ function NewTradeDialog({
       }
       onCreated(trade);
       onClose();
-      } catch (e:any) {
+    } catch (e: any) {
       // Friendlier inline error; keep dialog open so user can adjust risk/inputs
       const msg = String(e?.message ?? "Unknown error");
       // Try to surface DRF detail if present in the message body
@@ -233,36 +279,36 @@ function NewTradeDialog({
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div>
           <div className="text-xs mb-1">Ticker</div>
-          <Input value={ticker} onChange={e=>setTicker(e.target.value.toUpperCase())} />
+          <Input value={ticker} onChange={e => setTicker(e.target.value.toUpperCase())} />
         </div>
         <div>
           <div className="text-xs mb-1">Side</div>
           <div className="flex gap-2">
-            <Button variant={side==="LONG"?"default":"outline"} onClick={()=>setSide("LONG")}>LONG</Button>
-            <Button variant={side==="SHORT"?"default":"outline"} onClick={()=>setSide("SHORT")}>SHORT</Button>
+            <Button variant={side === "LONG" ? "default" : "outline"} onClick={() => setSide("LONG")}>LONG</Button>
+            <Button variant={side === "SHORT" ? "default" : "outline"} onClick={() => setSide("SHORT")}>SHORT</Button>
           </div>
         </div>
         <div>
           <div className="text-xs mb-1">Entry</div>
-          <Input type="number" value={entryPrice} onChange={e=>setEntryPrice(e.target.value ? Number(e.target.value) : "")}/>
+          <Input type="number" value={entryPrice} onChange={e => setEntryPrice(e.target.value ? Number(e.target.value) : "")} />
         </div>
         <div>
           <div className="text-xs mb-1">Stop</div>
-          <Input type="number" value={stopLoss} onChange={e=>setStopLoss(e.target.value ? Number(e.target.value) : "")}/>
+          <Input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value ? Number(e.target.value) : "")} />
         </div>
         <div>
           <div className="text-xs mb-1">Target</div>
-          <Input type="number" value={target} onChange={e=>setTarget(e.target.value ? Number(e.target.value) : "")}/>
+          <Input type="number" value={target} onChange={e => setTarget(e.target.value ? Number(e.target.value) : "")} />
         </div>
         <div>
           <div className="text-xs mb-1">Size</div>
-          <Input type="number" value={size} onChange={e=>setSize(e.target.value ? Number(e.target.value) : "")}/>
+          <Input type="number" value={size} onChange={e => setSize(e.target.value ? Number(e.target.value) : "")} />
         </div>
         <div className="md:col-span-3">
           <div className="text-xs mb-1">Strategy</div>
           <div className="flex flex-wrap gap-2">
-            {STRATEGY_TAGS.map(tag=>(
-              <Button key={tag} size="sm" variant={tags.includes(tag)?"default":"outline"} onClick={()=>toggleTag(tag)}>
+            {STRATEGY_TAGS.map(tag => (
+              <Button key={tag} size="sm" variant={tags.includes(tag) ? "default" : "outline"} onClick={() => toggleTag(tag)}>
                 {tags.includes(tag) ? `− ${tag}` : `+ ${tag}`}
               </Button>
             ))}
@@ -270,7 +316,7 @@ function NewTradeDialog({
         </div>
         <div className="md:col-span-3">
           <div className="text-xs mb-1">Notes</div>
-          <Textarea value={notes} onChange={e=>setNotes(e.target.value)} className="h-24"/>
+          <Textarea value={notes} onChange={e => setNotes(e.target.value)} className="h-24" />
         </div>
         <div className="md:col-span-3">
           <ImagePasteDrop files={shots} setFiles={setShots} />
@@ -280,13 +326,26 @@ function NewTradeDialog({
         <Button variant="outline" onClick={onClose}>Cancel</Button>
         <Button
           onClick={submit}
-          disabled={saving || !ticker || !entryPrice || !!kpiError}
-          title={kpiError ?? ""}
+          disabled={
+            saving || !ticker || !entryPrice || !!kpiError ||
+            !size || !stopLoss ||
+            (guardsEnabled && (exceedsPerTrade || exceedsDaily))
+          }
+          title={
+            kpiError ??
+            (guardsEnabled
+              ? (exceedsPerTrade ? "Exceeds per-trade cap"
+                : (exceedsDaily ? "Exceeds daily budget" : ""))
+              : "")
+          }
         >
           Create
         </Button>
-       </div>
-       {kpiError && (
+      </div>
+      <div className="mt-2 text-[11px] text-muted-foreground">
+        Trade risk: ${currentRisk$.toFixed(2)} · Per-trade cap: ${perTradeCap$.toFixed(2)} · Daily remaining: ${dailyRemaining$.toFixed(2)}
+      </div>
+      {kpiError && (
         <div className="mt-2 text-xs text-amber-600">
           {kpiError} &mdash; configure in{" "}
           <button className="underline" onClick={onGoRisk}>Risk Settings</button>.
@@ -298,7 +357,7 @@ function NewTradeDialog({
 
 function CloseTradeDialog({
   trade, onClosed, onClose
-}: { trade: Trade; onClosed: (id: string)=>void; onClose: ()=>void }) {
+}: { trade: Trade; onClosed: (id: string) => void; onClose: () => void }) {
   const [exitPrice, setExitPrice] = useState<number | "">("");
   const [notes, setNotes] = useState(trade.notes ?? "");
   const [shots, setShots] = useState<File[]>([]);
@@ -325,14 +384,14 @@ function CloseTradeDialog({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <div className="text-xs mb-1">Exit price</div>
-          <Input type="number" value={exitPrice} onChange={e=>setExitPrice(e.target.value ? Number(e.target.value) : "")}/>
+          <Input type="number" value={exitPrice} onChange={e => setExitPrice(e.target.value ? Number(e.target.value) : "")} />
         </div>
         <div className="md:col-span-2">
           <div className="text-xs mb-1">Notes</div>
-          <Textarea value={notes} onChange={e=>setNotes(e.target.value)} className="h-24"/>
+          <Textarea value={notes} onChange={e => setNotes(e.target.value)} className="h-24" />
         </div>
         <div className="md:col-span-2">
-          <ImagePasteDrop files={shots} setFiles={setShots} label="Click or paste exit screenshot (Ctrl/Cmd+V)"/>
+          <ImagePasteDrop files={shots} setFiles={setShots} label="Click or paste exit screenshot (Ctrl/Cmd+V)" />
         </div>
       </div>
       <div className="mt-4 flex justify-end gap-2">
@@ -369,7 +428,7 @@ const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "Ran
 export default function App() {
   const [page, setPage] = useState<"dashboard" | "stocks" | "risk" | "journal">("dashboard");
   const [risk, setRisk] = useState<RiskPolicy>(MOCK_RISK);
-  const [openTrades, setOpenTrades] = useState<Trade[]>(MOCK_OPEN_TRADES);
+  const [openTrades, setOpenTrades] = useState<Trade[]>([]);
   const [dark, setDark] = useState<boolean>(getInitialDark());
   const [authed, setAuthed] = useState<boolean>(hasToken());
 
@@ -386,31 +445,118 @@ export default function App() {
   const [showNew, setShowNew] = useState(false);
   const [closing, setClosing] = useState<Trade | null>(null);
   const [editOpen, setEditOpen] = useState(false);
-  const [editing, setEditing] = useState<any|null>(null);
+  const [editing, setEditing] = useState<any | null>(null);
 
   // Live account summary numbers
   const [todaysPL, setTodaysPL] = useState(0);
   const [totalPL, setTotalPL] = useState(0);
   const [totalEquity, setTotalEquity] = useState(0);
+  // E0 for the risk bar denominator (day-start equity)
+  const [dayStartEquity, setDayStartEquity] = useState(0);
+  // Coalesce / backoff state for dashboard refreshes to avoid 429s
+  const refreshGuard = useRef<{inflight: boolean; nextOk: number}>({
+    inflight: false, nextOk: 0,
+  });
+  const [session, setSession] = useState<SessionStatus | null>(null);
 
   // Risk meter: from backend status endpoint
   const [usedDailyRiskPct, setUsedDailyRiskPct] = useState(0);
-  const usedPctOfBudget = calcUsedPctOfBudget(usedDailyRiskPct, risk.maxDailyLossPct);
   // When backend isn't ready (e.g., "User settings not configured.")
   const [kpiError, setKpiError] = useState<string | null>(null);
+
+  // ---- Client-side risk calc helpers (strict intraday guard) ----
+  const perTradeRisk$ = (t: Trade) => {
+    if (!t.size || !t.stopLoss || !t.entryPrice) return 0;
+    const perUnit =
+      t.side === "LONG"
+        ? Math.max(0, t.entryPrice - t.stopLoss)
+        : Math.max(0, t.stopLoss - t.entryPrice);
+    return perUnit * t.size;
+  };
+
+  const openRisk$ = useMemo(
+    () => openTrades.reduce((sum, t) => sum + perTradeRisk$(t), 0),
+    [openTrades]
+  );
+
+  // pl_today is assumed realized P/L (positive=profit, negative=loss)
+  const realizedLoss$Today = useMemo(
+    () => Math.max(0, -Number(todaysPL || 0)),
+    [todaysPL]
+  );
+
+  // Base equity for budgets: prefer saved Day-Start equity; fall back to total equity.
+  const baseEquityForBudget = useMemo(() => {
+    const e0 = Number(dayStartEquity || 0);
+    if (isFinite(e0) && e0 > 0) return e0;
+    const te = Number(totalEquity || 0);
+    return isFinite(te) && te > 0 ? te : 0;
+  }, [dayStartEquity, totalEquity]);
+
+  // Percent of equity consumed if all current stops hit (strict view)
+  const clientUsedDailyRiskPct = useMemo(() => {
+    if (!isFinite(baseEquityForBudget) || baseEquityForBudget <= 0) return 0;
+    const used$ = realizedLoss$Today + openRisk$;
+    return (used$ / baseEquityForBudget) * 100;
+  }, [baseEquityForBudget, realizedLoss$Today, openRisk$]);
+
+  // Prefer stricter of server vs client; bar shows share of daily budget
+  const displayUsedDailyRiskPct = Math.max(usedDailyRiskPct, clientUsedDailyRiskPct);
+  const usedPctOfBudget = calcUsedPctOfBudget(displayUsedDailyRiskPct, risk.maxDailyLossPct);
+
+  // --- Budgets ($) used for client-side guards ---
+  const guardsEnabled = baseEquityForBudget > 0;
+  const perTradeCap$ = useMemo(
+    () =>
+      baseEquityForBudget > 0
+        ? baseEquityForBudget * (risk.maxRiskPerTradePct / 100)
+        : 0,
+    [baseEquityForBudget, risk.maxRiskPerTradePct]
+  );
+  const dailyBudget$ = useMemo(
+    () =>
+      baseEquityForBudget > 0
+        ? baseEquityForBudget * (risk.maxDailyLossPct / 100)
+        : 0,
+    [baseEquityForBudget, risk.maxDailyLossPct]
+  );
+  const dailyRemaining$ = Math.max(
+    0,
+    dailyBudget$ - (realizedLoss$Today + openRisk$)
+  );
 
   // Centralized refresher for dashboard KPIs (risk + account summary)
   const refreshDashboard = useCallback(async () => {
     if (!authed) return;
+    const now = Date.now();
+    // simple rate limit: skip if within backoff window or already running
+    if (refreshGuard.current.inflight || now < refreshGuard.current.nextOk) return;
+    refreshGuard.current.inflight = true;
     try {
-      const st = await fetchSessionStatusToday();
+       const st = await fetchSessionStatusToday();
       setUsedDailyRiskPct(Number(st?.used_daily_risk_pct ?? 0));
+      // Map today's session stats into local state (tolerate field name variants)
+      setSession({
+        trades: Number(st?.trades ?? 0),
+        win_rate: Number(st?.win_rate ?? 0),
+        avg_r: Number(st?.avg_r ?? 0),
+        best_r: Number(st?.best_r ?? 0),
+        worst_r: Number(st?.worst_r ?? 0),
+        // accept max_dd_pct or max_dd
+        max_dd_pct: Number(
+          (st?.max_dd_pct ?? st?.max_dd ?? 0)
+        ),
+      });
       setKpiError(null);
     } catch (e: any) {
-    const msg = String(e?.message ?? "");
+      const msg = String(e?.message ?? "");
       // Bubble up a friendly note if settings aren’t configured yet
       if (msg.includes("User settings not configured")) {
         setKpiError("User settings not configured.");
+      }
+      // Gentle backoff on throttle
+      if (msg.toLowerCase().includes("throttled") || msg.includes("429")) {
+        refreshGuard.current.nextOk = now + 60_000; // wait 60s before next try
       }
     }
     try {
@@ -418,7 +564,30 @@ export default function App() {
       setTodaysPL(Number(acct?.pl_today ?? 0));
       setTotalPL(Number(acct?.pl_total ?? 0));
       setTotalEquity(Number(acct?.equity_today ?? acct?.equity_last_close ?? 0));
-    } catch {}
+    } catch (e:any) {
+      if (String(e?.message ?? "").includes("429")) {
+        refreshGuard.current.nextOk = Date.now() + 60_000;
+      }
+    }
+    // Ensure today's day exists so the backend can carry E0 forward.
+    try {
+      const todayISO = new Date().toISOString().slice(0, 10);
+      const day = await getOrCreateJournalDay(todayISO);
+      // Prefer explicit day_start_equity; fall back to effective_equity so
+      // budgets work immediately even if E0 wasn't set yet.
+      setDayStartEquity(
+        Number(
+          (day as any)?.day_start_equity ??
+          (day as any)?.effective_equity ??
+          0
+        )
+      );
+    } catch {
+      // Non-fatal; client calc will no-op without E0
+    }
+    finally {
+      refreshGuard.current.inflight = false;
+    }
   }, [authed]);
 
   // theme → DOM + localStorage
@@ -428,7 +597,7 @@ export default function App() {
     else root.classList.remove("dark");
     try {
       localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
-    } catch {}
+    } catch { }
   }, [dark]);
 
   // theme → server (debounced) after login
@@ -450,31 +619,54 @@ export default function App() {
     (async () => {
       try {
         const settings = await apiFetchUserSettings();
-        if (settings) setDark(!!settings.dark_mode);
-      } catch {}
+        if (settings) {
+          setDark(!!settings.dark_mode);
+          setRisk(r => ({
+            ...r,
+            maxRiskPerTradePct: Number(settings.max_risk_per_trade_pct ?? r.maxRiskPerTradePct),
+            maxDailyLossPct: Number(settings.max_daily_loss_pct ?? r.maxDailyLossPct),
+            maxTradesPerDay: Number(settings.max_trades_per_day ?? r.maxTradesPerDay),
+          }));
+        }
+      } catch { }
       try {
         const trades = await apiFetchOpenTrades();
-        if (Array.isArray(trades) && trades.length) {
-          setOpenTrades(trades as Trade[]);
-        }
-      } catch {}
-      await refreshDashboard();
+        setOpenTrades(Array.isArray(trades) ? (trades as Trade[]) : []);
+      } catch { }
+      // Initial pull (coalesced & rate-limited)
+      void refreshDashboard();
     })();
-    }, [authed, refreshDashboard]);
+  }, [authed, refreshDashboard]);
 
-    // Keep KPIs fresh: poll + refresh when tab becomes visible
-    useEffect(() => {
-      if (!authed) return;
-      let handle: any;
-      const pull = () => { void refreshDashboard(); };
-      pull(); // immediate
-      handle = setInterval(pull, 20000); // every 20s (tweak as needed)
-      const onVis = () => { if (document.visibilityState === "visible") pull(); };
-      document.addEventListener("visibilitychange", onVis);
-      return () => {
-        clearInterval(handle);
-        document.removeEventListener("visibilitychange", onVis);
-      };
+  // Keep KPIs fresh: poll + refresh when tab becomes visible
+  useEffect(() => {
+    if (!authed) return;
+    let handle: any;
+    const pull = () => void refreshDashboard();
+    // no immediate double-pull; the auth effect already triggered one
+    handle = setInterval(pull, 30000); // every 30s
+    const onVis = () => { if (document.visibilityState === "visible") pull(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      clearInterval(handle);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [authed, refreshDashboard]);
+
+  // --- Detect local date rollover (e.g., at midnight) and refresh once ---
+  useEffect(() => {
+    if (!authed) return;
+    let last = new Date().toDateString();
+    const tick = () => {
+      const now = new Date().toDateString();
+      if (now !== last) {
+        last = now;
+        // Ensure a fresh JournalDay for the new date and refresh KPIs.
+        void refreshDashboard();
+      }
+    };
+    const id = setInterval(tick, 60_000); // check each minute
+    return () => clearInterval(id);
   }, [authed, refreshDashboard]);
 
   /* ---------- Auth Landing ---------- */
@@ -574,9 +766,14 @@ export default function App() {
         <div className="mt-4">
           <div className="flex justify-between text-xs mb-1">
             <span className="text-muted-foreground">Daily risk used</span>
-            <span className="font-medium">{usedDailyRiskPct.toFixed(2)}% / {risk.maxDailyLossPct}%</span>
+            <span className="font-medium">
+              {displayUsedDailyRiskPct.toFixed(2)}% / {risk.maxDailyLossPct}%
+            </span>
           </div>
           <Progress value={usedPctOfBudget} />
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            Open risk: ${openRisk$.toFixed(2)} · Realized loss: ${realizedLoss$Today.toFixed(2)} · Budget: ${(baseEquityForBudget * (risk.maxDailyLossPct / 100)).toFixed(2)}
+          </div>
         </div>
         {kpiError && (
           <div className="mt-3 text-xs text-amber-600">
@@ -586,9 +783,6 @@ export default function App() {
             >Risk Settings</button>.
           </div>
         )}
-        <p className="mt-3 text-xs text-muted-foreground">
-          Will sync with <code>/api/risk-policy</code> and <code>/api/pnl/daily</code>.
-        </p>
       </CardContent>
     </Card>
   );
@@ -623,7 +817,6 @@ export default function App() {
     </Card>
   );
 
-  const sessionStats = { trades: 3, winRate: 66.7, avgR: 0.42, bestR: 2.1, worstR: -0.8, maxDD: -1.7 };
   function Stat({ label, value }: { label: string; value: string | number }) {
     return (
       <div>
@@ -637,12 +830,12 @@ export default function App() {
       <CardContent className="p-4">
         <h2 className="font-bold mb-2">Session Stats</h2>
         <div className="grid grid-cols-3 lg:grid-cols-6 gap-4 text-sm">
-          <Stat label="Trades" value={sessionStats.trades} />
-          <Stat label="Win rate" value={`${sessionStats.winRate.toFixed(1)}%`} />
-          <Stat label="Avg R" value={sessionStats.avgR.toFixed(2)} />
-          <Stat label="Best R" value={sessionStats.bestR.toFixed(2)} />
-          <Stat label="Worst R" value={sessionStats.worstR.toFixed(2)} />
-          <Stat label="Max DD" value={`${sessionStats.maxDD.toFixed(2)}%`} />
+          <Stat label="Trades"   value={session?.trades ?? 0} />
+          <Stat label="Win rate" value={`${(session?.win_rate ?? 0).toFixed(1)}%`} />
+          <Stat label="Avg R"    value={(session?.avg_r ?? 0).toFixed(2)} />
+          <Stat label="Best R"   value={(session?.best_r ?? 0).toFixed(2)} />
+          <Stat label="Worst R"  value={(session?.worst_r ?? 0).toFixed(2)} />
+          <Stat label="Max DD"   value={`${(session?.max_dd_pct ?? 0).toFixed(2)}%`} />
         </div>
         <p className="mt-3 text-xs text-muted-foreground">Source: <code>/api/journal/trades/status/today/</code></p>
       </CardContent>
@@ -650,23 +843,23 @@ export default function App() {
   );
 
   const onEditTrade = (t: any) => {
-   setEditing(t);
-   setEditOpen(true);
- };
+    setEditing(t);
+    setEditOpen(true);
+  };
 
- const onSaveEdit = async (vals: any) => {
-   if (!editing) return;
-   const updated = await updateTrade(editing.id, vals);
-   // optimistic local replace
-   setOpenTrades(prev => prev.map(x => (x.id === updated.id ? updated : x)));
-   // ensure normalized tags (and any server-side adjustments) are reflected
-   try {
-     const fresh = await apiFetchOpenTrades();
-     if (Array.isArray(fresh)) setOpenTrades(fresh as Trade[]);
-   } catch { /* ignore – local optimistic update already applied */ }
-   // refresh KPIs after edit
-   void refreshDashboard();
- };
+  const onSaveEdit = async (vals: any) => {
+    if (!editing) return;
+    const updated = await updateTrade(editing.id, vals);
+    // optimistic local replace
+    setOpenTrades(prev => prev.map(x => (x.id === updated.id ? updated : x)));
+    // ensure normalized tags (and any server-side adjustments) are reflected
+    try {
+      const fresh = await apiFetchOpenTrades();
+      if (Array.isArray(fresh)) setOpenTrades(fresh as Trade[]);
+    } catch { /* ignore – local optimistic update already applied */ }
+    // refresh KPIs after edit
+    void refreshDashboard();
+  };
 
   const OpenTrades = () => (
     <Card>
@@ -715,17 +908,17 @@ export default function App() {
                   </td>
                   <td className="py-2 pr-2 space-y-2">
                     <div className="flex items-center gap-2">
-                        <Button size="sm" variant="outline" onClick={() => onEditTrade(t)}>Edit</Button>
-                        <Button size="sm" variant="outline" onClick={() => setClosing(t)}>Close</Button>
+                      <Button size="sm" variant="outline" onClick={() => onEditTrade(t)}>Edit</Button>
+                      <Button size="sm" variant="outline" onClick={() => setClosing(t)}>Close</Button>
                     </div>
-                 </td>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          On close, move to journal.
+          Moves to the Journal section after closing.
         </p>
       </CardContent>
     </Card>
@@ -831,7 +1024,9 @@ export default function App() {
         // Only fetch adjustments when we have a valid id
         const list = await listAdjustments(id);
         setRows(Array.isArray(list) ? list : []);
-      } catch (e:any) {
+        // Keep the dashboard in sync immediately (updates top-level dayStartEquity)
+        await refreshDashboard();
+      } catch (e: any) {
         setErr(e?.message ?? "Failed to load equity");
       } finally {
         setLoading(false);
@@ -849,7 +1044,7 @@ export default function App() {
         setAdjustmentsTotal(Number(updated.adjustments_total || 0));
         // refresh top-of-page KPIs too
         await refreshDashboard();
-      } catch (e:any) {
+      } catch (e: any) {
         setErr(e?.message ?? "Failed to save day start equity");
       } finally { setSaving(false); }
     };
@@ -867,7 +1062,7 @@ export default function App() {
         setAdjAmount(0); setAdjNote("");
         await load();
         await refreshDashboard();
-      } catch (e:any) {
+      } catch (e: any) {
         setErr(e?.message ?? "Failed to add adjustment");
       }
     };
@@ -878,7 +1073,7 @@ export default function App() {
         await deleteAdjustment(id);
         await load();
         await refreshDashboard();
-      } catch (e:any) {
+      } catch (e: any) {
         setErr(e?.message ?? "Failed to delete adjustment");
       }
     };
@@ -933,7 +1128,7 @@ export default function App() {
                       type="number"
                       step="0.01"
                       value={dayStartEquity}
-                      onChange={(e)=>setDayStartEquity(Number(e.target.value))}
+                      onChange={(e) => setDayStartEquity(Number(e.target.value))}
                     />
                   </label>
                   <div>
@@ -957,12 +1152,14 @@ export default function App() {
                     <label className="block md:col-span-2">
                       <span className="text-xs text-muted-foreground">Amount</span>
                       <Input type="number" step="0.01" value={adjAmount}
-                             onChange={(e)=>setAdjAmount(Number(e.target.value))}/>
+                        onChange={(e) => setAdjAmount(Number(e.target.value))} />
                     </label>
                     <label className="block">
                       <span className="text-xs text-muted-foreground">Reason</span>
                       <select
-                        className="mt-1 w-full rounded-xl bg-background border p-2"
+                        className="mt-1 w-full rounded-xl border bg-background text-foreground p-2
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
+                                   disabled:cursor-not-allowed disabled:opacity-50"
                         value={adjReason}
                         onChange={(e)=>setAdjReason(e.target.value as AdjustmentReason)}
                       >
@@ -974,7 +1171,7 @@ export default function App() {
                     </label>
                     <label className="block md:col-span-2">
                       <span className="text-xs text-muted-foreground">Note</span>
-                      <Input value={adjNote} onChange={(e)=>setAdjNote(e.target.value)} placeholder="Optional"/>
+                      <Input value={adjNote} onChange={(e) => setAdjNote(e.target.value)} placeholder="Optional" />
                     </label>
                     <div className="md:col-span-5">
                       <Button onClick={addAdj} disabled={!journalDayId || journalDayId <= 0}>Add adjustment</Button>
@@ -984,7 +1181,7 @@ export default function App() {
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead className="text-muted-foreground">
-                        <tr><th className="text-left py-2">When</th><th className="text-left">Reason</th><th className="text-right">Amount</th><th className="text-left">Note</th><th/></tr>
+                        <tr><th className="text-left py-2">When</th><th className="text-left">Reason</th><th className="text-right">Amount</th><th className="text-left">Note</th><th /></tr>
                       </thead>
                       <tbody>
                         {rows.map((r) => (
@@ -1110,6 +1307,9 @@ export default function App() {
           }}
           kpiError={kpiError}
           onGoRisk={() => setPage("risk")}
+          perTradeCap$={perTradeCap$}
+          dailyRemaining$={dailyRemaining$}
+          guardsEnabled={guardsEnabled}
         />
       )}
       {closing && (
