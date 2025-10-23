@@ -66,7 +66,7 @@ function isFormData(x: any): x is FormData {
 }
 
 // Delegate all API calls through authedFetch (handles JWT auto-refresh + cookies)
-async function apiFetch(path: string, opts: RequestInit = {}) {
+export async function apiFetch(path: string, opts: RequestInit = {}) {
   return authedFetch(`${API_BASE}${path}`, opts);
 }
 
@@ -167,12 +167,16 @@ export function hasToken() {
   // Prefer in-memory access; fall back to legacy localStorage for now
   return !!getAccessToken() || !!localStorage.getItem("jwt");
 }
+
 export async function logout() {
   try {
-    await fetch(`${API_BASE}/auth/logout/`, { method: "POST", credentials: "include" });
-  } catch {}
-  setAccessToken(null);        // drop in-memory access
-  localStorage.removeItem("jwt"); // drop legacy cache
+    await authedFetch(`${API_BASE}/auth/logout/`, { method: "POST" }); // adds CSRF + Authorization + credentials
+  } catch (e) {
+    // even if backend is unreachable, still clear client auth
+  } finally {
+    setAccessToken(null);
+    try { localStorage.removeItem("jwt"); } catch {}
+  }
 }
 
 export async function fetchSessionStatusToday() {
@@ -352,6 +356,9 @@ function getCookie(name: string): string | null {
   return m ? decodeURIComponent(m[2]) : null;
 }
 
+let onUnauthorized: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: (() => void) | null) { onUnauthorized = fn; }
+
 export async function authedFetch(
   url: string,
   init: RequestInit = {},
@@ -394,6 +401,8 @@ export async function authedFetch(
     } else {
       // refresh failed: clear and bubble up so UI can redirect to login
       setAccessToken(null);
+      try { localStorage.removeItem("jwt"); } catch {}
+      if (_onUnauthorized) _onUnauthorized();
       throw new Error("Unauthorized; please log in again.");
     }
   }

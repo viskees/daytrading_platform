@@ -6,6 +6,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import TradesCalendar from "./components/Calendar";
+import { apiFetch } from "@/lib/api";
 import type { ReactNode, ChangeEvent, DragEvent, ClipboardEvent } from "react";
 import {
   login as apiLogin,
@@ -28,6 +30,7 @@ import {
   createAdjustment,
   deleteAdjustment,
   type AdjustmentReason,
+  setUnauthorizedHandler,
 } from "@/lib/api";
 import JournalTab from "./components/JournalTab";
 import TradeEditor from "./components/TradeEditor";
@@ -78,6 +81,17 @@ type SessionStatus = {
   max_dd_pct: number; // percent, e.g. -1.7
 };
 
+// Calendar month/day summaries (mirrors props expected by TradesCalendar)
+type DaySummary = {
+  date: string;       // 'YYYY-MM-DD'
+  pl: number;         // net P/L $
+  trades: number;
+  win_rate: number;   // %
+  avg_r: number;
+  best_r: number;
+  worst_loss_r: number;
+  max_dd_pct: number; // %
+};
 /* =========================
    Helpers + Tests
    ========================= */
@@ -100,6 +114,13 @@ export function getInitialDark(): boolean {
   }
   return false;
 }
+
+// Local YYYY-MM-DD (avoid UTC off-by-one with toISOString())
+function ymdLocal(d: Date) {
+  const p = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 
 function debounce<T extends (...args: any[]) => void>(fn: T, ms = 300) {
   let t: any;
@@ -442,6 +463,28 @@ export default function App() {
     })();
   }, [authed]);
 
+  // If the backend reports 401 and refresh fails (expired/blacklisted),
+  // flip the app to the login screen.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthed(false);
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
+  // Idle timeout → auto-logout and return to login
+  useEffect(() => {
+    if (!authed) return;
+    const IDLE_MS = 15 * 60 * 1000; // 15 minutes
+    let timer: number | undefined;
+    const reset = () => { if (timer) window.clearTimeout(timer); timer = window.setTimeout(async () => { try { await apiLogout(); } finally { setAuthed(false); } }, IDLE_MS); };
+    const events = ["mousemove","mousedown","keydown","scroll","touchstart","visibilitychange"] as const;
+    events.forEach(ev => window.addEventListener(ev, reset, { passive: true } as AddEventListenerOptions));
+    reset();
+    return () => { if (timer) window.clearTimeout(timer); events.forEach(ev => window.removeEventListener(ev, reset as any)); };
+  }, [authed]);
+
+
   const [showNew, setShowNew] = useState(false);
   const [closing, setClosing] = useState<Trade | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -450,7 +493,12 @@ export default function App() {
   // Live account summary numbers
   const [todaysPL, setTodaysPL] = useState(0);
   const [totalPL, setTotalPL] = useState(0);
-  const [totalEquity, setTotalEquity] = useState(0);
+  const [totalEquity, setTotalEquity] = useState<number>(() => {
+    try {
+      const v = localStorage.getItem(LAST_EQUITY_KEY);
+      return v ? Number(v) : 0;
+    } catch { return 0; }
+  });
   // E0 for the risk bar denominator (day-start equity)
   const [dayStartEquity, setDayStartEquity] = useState(0);
   // Coalesce / backoff state for dashboard refreshes to avoid 429s
@@ -525,6 +573,100 @@ export default function App() {
     dailyBudget$ - (realizedLoss$Today + openRisk$)
   );
 
+  // -------- Calendar data providers --------
+  const getMonthSummaries = useCallback(async (year: number, month0: number): Promise<DaySummary[]> => {
+    // Use LOCAL dates to avoid UTC month-boundary drift
+    const startISO = ymdLocal(new Date(year, month0, 1));
+    const endISO   = ymdLocal(new Date(year, month0 + 1, 0));
+
+    // Prefer a compact server-side daily P/L endpoint if available.
+    try {
+      const res = await apiFetch(`/journal/pnl/daily/?start=${startISO}&end=${endISO}`);
+      if (res.ok) {
+        const rows = await res.json();
+        // Expect rows shaped like DaySummary (lenient field names tolerated)
+        return (rows || []).map((r: any) => ({
+          date: String(r.date ?? r.day ?? ""),
+          pl: Number(r.pl ?? r.pnl ?? 0),
+          trades: Number(r.trades ?? 0),
+          win_rate: Number(r.win_rate ?? 0),
+          avg_r: Number(r.avg_r ?? 0),
+          best_r: Number(r.best_r ?? 0),
+          worst_loss_r: Number(r.worst_loss_r ?? r.worst_r ?? 0),
+          max_dd_pct: Number(r.max_dd_pct ?? 0),
+        }));
+      }
+    } catch { /* fall back below */ }
+
+    // Fallback: derive per-day summary client-side from closed trades list.
+    try {
+      // Use valid django-filter params the backend exposes (gte/lte on journal_day__date)
+      const res = await apiFetch(
+        `/journal/trades/?status=CLOSED&journal_day__date__gte=${startISO}&journal_day__date__lte=${endISO}&ordering=entry_time`
+      );
+      if (!res.ok) return [];
+      const payload = await res.json();
+      const items: any[] = Array.isArray(payload) ? payload : (payload.results ?? []);
+      const byDay: Record<string, any[]> = {};
+      for (const t of items) {
+        const day = String((t.exit_time ?? t.entry_time ?? "").slice(0, 10));
+        if (!byDay[day]) byDay[day] = [];
+        byDay[day].push(t);
+      }
+      const out: DaySummary[] = [];
+      for (const day of Object.keys(byDay)) {
+        const trades = byDay[day];
+        const rVals = trades.map((t: any) => Number(t.r ?? 0)).filter((x) => isFinite(x));
+        const wins = rVals.filter((x) => x > 0).length;
+        const lossRs = rVals.filter((x) => x < 0);
+        const bestR = rVals.length ? Math.max(...rVals) : 0;
+        const worstLossR = lossRs.length ? Math.min(...lossRs) : 0;
+        const avgR = rVals.length ? rVals.reduce((a, b) => a + b, 0) / rVals.length : 0;
+        const pl = trades.reduce((s: number, t: any) => s + Number(t.pl ?? 0), 0);
+        out.push({
+          date: day,
+          pl,
+          trades: trades.length,
+          win_rate: trades.length ? (wins / trades.length) * 100 : 0,
+          avg_r: avgR,
+          best_r: bestR,
+          worst_loss_r: worstLossR,
+          max_dd_pct: 0, // unknown from trades list alone; server endpoint can supply
+        });
+      }
+      // Keep tiles stable even if API returns empty; return [] is fine.
+      return out;
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const getDayTrades = useCallback(async (isoDate: string) => {
+    try {
+      // Use apiFetch so Authorization + refresh flow are handled.
+      // Also use supported filters: journal_day__date (not 'date').
+      const res = await apiFetch(
+        `/journal/trades/?status=CLOSED&journal_day__date=${isoDate}&ordering=entry_time`
+      );
+      const payload = await res.json();
+      const items: any[] = Array.isArray(payload) ? payload : (payload.results ?? []);
+      // Normalize to what TradesCalendar expects for the drawer
+      return items.map((t) => ({
+        id: t.id,
+        ticker: t.ticker,
+        side: t.side,
+        r: t.r ?? null,
+        entry: t.entry_price ?? null,
+        exit: t.exit_price ?? null,
+        size: t.size ?? null,
+        tags: t.strategy_tags ?? t.strategyTags ?? [],
+        notes: t.notes ?? "",
+      }));
+    } catch {
+      return [];
+    }
+  }, []);
+
   // Centralized refresher for dashboard KPIs (risk + account summary)
   const refreshDashboard = useCallback(async () => {
     if (!authed) return;
@@ -561,9 +703,19 @@ export default function App() {
     }
     try {
       const acct = await fetchAccountSummary();
-      setTodaysPL(Number(acct?.pl_today ?? 0));
-      setTotalPL(Number(acct?.pl_total ?? 0));
-      setTotalEquity(Number(acct?.equity_today ?? acct?.equity_last_close ?? 0));
+      const nextTodayPL = Number(acct?.pl_today ?? 0);
+      const nextTotalPL = Number(acct?.pl_total ?? 0);
+      // Prefer today's equity; fall back to last close. If API gives 0/NaN, KEEP previous.
+      const candidateEquity = Number(acct?.equity_today ?? acct?.equity_last_close ?? NaN);
+      setTodaysPL(nextTodayPL);
+      setTotalPL(nextTotalPL);
+      setTotalEquity((prev) => {
+        const ok = isFinite(candidateEquity) && candidateEquity > 0;
+        const val = ok ? candidateEquity : prev;
+        // persist sticky equity so a hard reload next morning keeps value until server fills it
+        try { localStorage.setItem(LAST_EQUITY_KEY, String(val)); } catch {}
+        return val;
+      });
     } catch (e:any) {
       if (String(e?.message ?? "").includes("429")) {
         refreshGuard.current.nextOk = Date.now() + 60_000;
@@ -571,17 +723,17 @@ export default function App() {
     }
     // Ensure today's day exists so the backend can carry E0 forward.
     try {
-      const todayISO = new Date().toISOString().slice(0, 10);
+      const todayISO = ymdLocal(new Date());
       const day = await getOrCreateJournalDay(todayISO);
       // Prefer explicit day_start_equity; fall back to effective_equity so
       // budgets work immediately even if E0 wasn't set yet.
-      setDayStartEquity(
-        Number(
-          (day as any)?.day_start_equity ??
-          (day as any)?.effective_equity ??
-          0
-        )
+      const nextE0 = Number(
+        (day as any)?.day_start_equity ??
+        (day as any)?.effective_equity ??
+        0
       );
+      // Don't overwrite with 0 at day start; keep last known if backend hasn't populated yet.
+      setDayStartEquity((prev) => (isFinite(nextE0) && nextE0 > 0 ? nextE0 : prev));
     } catch {
       // Non-fatal; client calc will no-op without E0
     }
@@ -893,7 +1045,21 @@ export default function App() {
                   <td className="py-2 pr-2">{t.stopLoss?.toFixed(2) ?? "-"}</td>
                   <td className="py-2 pr-2">{t.target?.toFixed(2) ?? "-"}</td>
                   <td className="py-2 pr-2">{t.size ?? "-"}</td>
-                  <td className="py-2 pr-2">{t.riskR?.toFixed(2) ?? "-"}</td>
+                  {(() => {
+                    const perUnit =
+                      t.stopLoss == null || t.size == null
+                        ? 0
+                        : (t.side === "LONG"
+                            ? Math.max(0, t.entryPrice - t.stopLoss)
+                            : Math.max(0, t.stopLoss - t.entryPrice));
+                    const riskDollar = perUnit * (t.size ?? 0);
+                    const r = perTradeCap$ > 0 ? riskDollar / perTradeCap$ : 0;
+                    return (
+                      <td className="py-2 pr-2" title={riskDollar ? `$${riskDollar.toFixed(2)} risk to stop` : ""}>
+                        {riskDollar ? r.toFixed(2) : "-"}
+                      </td>
+                    );
+                  })()}
                   <td className="py-2 pr-2 max-w-[200px]">
                     <div className="flex flex-wrap gap-1">
                       {(t.strategyTags ?? []).map((tag) => (
@@ -920,20 +1086,6 @@ export default function App() {
         <p className="mt-3 text-xs text-muted-foreground">
           Moves to the Journal section after closing.
         </p>
-      </CardContent>
-    </Card>
-  );
-
-  const Calendar = () => (
-    <Card>
-      <CardContent className="p-4">
-        <h2 className="font-bold mb-2">Calendar</h2>
-        <p className="text-sm text-muted-foreground">Summary of each day – clickable to see trades (placeholder grid).</p>
-        <div className="grid grid-cols-7 gap-2 mt-4">
-          {Array.from({ length: 28 }).map((_, i) => (
-            <div key={i} className="border rounded-xl h-20 flex items-center justify-center text-xs hover:bg-muted cursor-pointer">{i + 1}</div>
-          ))}
-        </div>
       </CardContent>
     </Card>
   );
@@ -1226,7 +1378,12 @@ export default function App() {
                 <OpenTrades />
               </div>
             </div>
-            <Calendar />
+            <TradesCalendar
+              dayStartEquity={dayStartEquity}
+              maxDailyLossPct={risk.maxDailyLossPct}
+              getMonthSummaries={getMonthSummaries}
+              getDayTrades={getDayTrades}
+            />
           </div>
         );
       case "stocks":
@@ -1275,9 +1432,12 @@ export default function App() {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => {
-              apiLogout();
-              setAuthed(false);
+            onClick={async () => {
+              try {
+                await apiLogout(); // ensures refresh cookie is deleted server-side
+              } finally {
+                setAuthed(false);  // immediately return UI to login
+              }
             }}
           >
             Logout

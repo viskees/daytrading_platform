@@ -1,1 +1,2 @@
 /admin and /pgadmin dont route correctly
+Dashboard - total equity is filled next day, but on the risk page Effective equity is not

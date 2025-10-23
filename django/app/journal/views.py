@@ -3,6 +3,7 @@ from rest_framework import viewsets, mixins, status, permissions, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
+from datetime import datetime
 from django.utils.timezone import now
 from .models import JournalDay, Trade, StrategyTag, Attachment, UserSettings, AccountAdjustment
 from .serializers import UserSettingsSerializer, JournalDaySerializer, TradeSerializer, StrategyTagSerializer, AttachmentSerializer, AccountAdjustmentSerializer
@@ -11,8 +12,22 @@ from django.db import IntegrityError
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.serializers import ValidationError
-from django.db.models import Q
+from django.db.models import (
+    Q,
+    F,
+    Sum,
+    Avg,
+    Max,
+    Min,
+    Count,
+    Case,
+    When,
+    IntegerField,
+    FloatField,
+    ExpressionWrapper,
+)
 from decimal import Decimal
+from django.db.models.functions import TruncDate
 
 
 class Conflict(APIException):
@@ -129,14 +144,34 @@ class TradeViewSet(viewsets.ModelViewSet):
     search_fields = ["ticker", "notes"]
 
     def get_queryset(self):
-        qs = (Trade.objects.filter(user=self.request.user)
-              .prefetch_related("strategy_tags"))
-        day_id = self.request.query_params.get("journal_day")
-        status_f = self.request.query_params.get("status")
+        qs = (
+            Trade.objects.filter(user=self.request.user)
+            .prefetch_related("strategy_tags")
+        )
+        params = self.request.query_params
+
+        # existing filters
+        day_id   = params.get("journal_day")
+        status_f = params.get("status")
         if day_id:
             qs = qs.filter(journal_day_id=day_id)
         if status_f:
             qs = qs.filter(status=status_f)
+
+        # ---- compatibility aliases for date filtering ----
+        # Support ?date=YYYY-MM-DD
+        exact_date = params.get("date")
+        if exact_date:
+            qs = qs.filter(journal_day__date=exact_date)
+
+        # Support ?date_from=&date_to= (mapped to gte/lte on journal_day__date)
+        date_from = params.get("date_from")
+        date_to   = params.get("date_to")
+        if date_from:
+            qs = qs.filter(journal_day__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(journal_day__date__lte=date_to)
+
         return qs
 
     def perform_create(self, serializer):
@@ -399,3 +434,100 @@ class AccountAdjustmentViewSet(mixins.CreateModelMixin,
         except Exception:
             raise ValidationError({"amount": "Invalid amount."})
         serializer.save(user=self.request.user)
+
+
+class PnLViewSet(viewsets.ViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @action(detail=False, methods=["get"], url_path="daily")
+    def daily(self, request):
+        start = request.query_params.get("start")
+        end = request.query_params.get("end")
+        if not start or not end:
+            return Response({"detail": "start and end (YYYY-MM-DD) are required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            start_date = datetime.strptime(start, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"detail": "Invalid date format."}, status=400)
+
+        # Robust PnL expression computed from prices * quantity.
+        # LONG:  (exit - entry) * qty
+        # SHORT: (entry - exit) * qty  ==  - (exit - entry) * qty
+        price_move = (F("exit_price") - F("entry_price"))
+        signed_move = Case(
+            When(side="SHORT", then=-price_move),
+            default=price_move,
+            output_field=FloatField(),
+        )
+        pnl_expr = ExpressionWrapper(signed_move * F("quantity"), output_field=FloatField())
+
+        # Aggregate per calendar day (by exit_time date). We compute PL and trade count in SQL.
+        base = (
+            Trade.objects
+            .filter(
+                user=request.user,
+                status="CLOSED",
+                exit_time__date__gte=start_date,
+                exit_time__date__lte=end_date,
+            )
+            .annotate(day=TruncDate("exit_time"))
+            .values("day")
+            .annotate(
+                trades=Count("id"),
+                pl=Sum(pnl_expr, output_field=FloatField()),
+            )
+            .order_by("day")
+        )
+
+        # For R-metrics (avg/best/worst & win_rate), compute in Python to avoid relying
+        # on a stored DB column. We accept either model field `r` or property `r_multiple`.
+        out = []
+        for row in base:
+            day = row["day"]
+            trades_count = int(row.get("trades") or 0)
+            pl_val = float(row.get("pl") or 0.0)
+
+            # Pull the day's trades to compute R metrics safely in Python.
+            day_trades = Trade.objects.filter(
+                user=request.user, status="CLOSED", exit_time__date=day
+            )
+            r_list = []
+            wins = 0
+            for t in day_trades:
+                # prefer DB field `r`, else property `r_multiple`, else 0.0
+                r_val = getattr(t, "r", None)
+                if r_val is None:
+                    r_val = getattr(t, "r_multiple", None)
+                try:
+                    r_f = float(r_val) if r_val is not None else 0.0
+                except Exception:
+                    r_f = 0.0
+                r_list.append(r_f)
+                if r_f > 0:
+                    wins += 1
+
+            if r_list:
+                avg_r = sum(r_list) / len(r_list)
+                best_r = max(r_list)
+                worst_r = min(r_list)
+            else:
+                avg_r = 0.0
+                best_r = 0.0
+                worst_r = 0.0
+
+            win_rate = (wins / trades_count * 100.0) if trades_count else 0.0
+
+            out.append({
+                "date": day.isoformat(),
+                "pl": round(pl_val, 2),
+                "trades": trades_count,
+                "win_rate": round(win_rate, 2),
+                "avg_r": round(avg_r, 4),
+                "best_r": round(best_r, 4),
+                "worst_loss_r": round(worst_r, 4),  # typically negative
+                "max_dd_pct": 0.0,  # placeholder; can be computed from equity path
+            })
+
+        return Response(out)
