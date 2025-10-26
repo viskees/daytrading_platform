@@ -77,7 +77,11 @@ export default function TradesCalendar({
     try {
       const list = await getMonthSummaries(year, month0);
       const m: Record<string, DaySummary> = {};
-      for (const d of list) m[d.date] = d;
+      // Normalize keys so they always match our grid's `YYYY-MM-DD`
+      for (const d of list) {
+        const key = String(d.date).slice(0, 10);
+        m[key] = { ...d, date: key };
+      }
       setData(m);
     } finally {
       setLoading(false);
@@ -118,6 +122,27 @@ export default function TradesCalendar({
       try {
         const rows = await getDayTrades(iso);
         setOpenTrades(rows);
+
+        // If the month summary didn’t include this day (e.g., just closed a trade),
+        // synthesize a minimal DaySummary so the drawer header & tile have data now.
+        if (!data[iso]) {
+          const trades = Array.isArray(rows) ? rows.length : 0;
+          if (trades > 0) {
+            setData(prev => ({
+              ...prev,
+              [iso]: {
+                date: iso,
+                pl: 0,              // unknown without server agg; keep 0
+                trades,
+                win_rate: 0,        // leave 0; server agg will fill next pull
+                avg_r: 0,
+                best_r: 0,
+                worst_loss_r: 0,
+                max_dd_pct: 0,
+              },
+            }));
+          }
+        }
       } catch {
         setOpenTrades(null);
       }
@@ -191,7 +216,11 @@ export default function TradesCalendar({
                   iso && isToday(iso) ? "ring-1 ring-white/20" : "",
                   !iso ? "cursor-default" : "cursor-pointer",
                 ].join(" ")}
-                title={iso && sum ? `P/L: ${sum.pl.toFixed(2)} | Trades: ${sum.trades} | Win: ${sum.win_rate.toFixed(0)}%` : ""}
+                title={
+                  iso && sum
+                    ? `P/L: ${Number(sum.pl || 0).toFixed(2)} | Trades: ${Number(sum.trades || 0)} | Win: ${Number(sum.win_rate || 0).toFixed(0)}%`
+                    : ""
+                }
               >
                 <div className="flex justify-between items-start">
                   <span className="text-[11px] opacity-80">{d}</span>
@@ -203,7 +232,9 @@ export default function TradesCalendar({
                 </div>
                 {sum ? (
                   <div className="absolute bottom-1 right-2 text-[11px] font-medium opacity-90">
-                    {sum.pl > 0 ? `+${sum.pl.toFixed(0)}` : sum.pl.toFixed(0)}
+                    {Number(sum.pl || 0) > 0
+                      ? `+${Number(sum.pl || 0).toFixed(0)}`
+                      : Number(sum.pl || 0).toFixed(0)}
                   </div>
                 ) : null}
               </button>

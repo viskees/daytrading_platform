@@ -381,10 +381,17 @@ class TradeViewSet(viewsets.ModelViewSet):
                 "detail": "exit_price is required"
         }, status=status.HTTP_400_BAD_REQUEST)
         trade.exit_price = exit_price
+        # Guarantee exit_time + CLOSED status
         if not trade.exit_time:
             trade.exit_time = timezone.now()
-            trade.status = "CLOSED"
-            trade.save(update_fields=["exit_price", "exit_time", "status"])
+        trade.status = "CLOSED"
+        # Ensure the trade is attached to the JournalDay of the (local) exit date.
+        # (If it was missing or belonged to a different day, fix it now)
+        exit_date = trade.exit_time.date()
+        if not trade.journal_day or trade.journal_day.date != exit_date:
+            jd, _ = JournalDay.objects.get_or_create(user=request.user, date=exit_date)
+            trade.journal_day = jd
+        trade.save(update_fields=["exit_price", "exit_time", "status", "journal_day"])
         return Response(TradeSerializer(trade).data)
 
 class StrategyTagViewSet(viewsets.ModelViewSet):
@@ -469,29 +476,28 @@ class PnLViewSet(viewsets.ViewSet):
             .filter(
                 user=request.user,
                 status="CLOSED",
-                exit_time__date__gte=start_date,
-                exit_time__date__lte=end_date,
+                journal_day__date__gte=start_date,
+                journal_day__date__lte=end_date,
             )
-            .annotate(day=TruncDate("exit_time"))
-            .values("day")
+            .values("journal_day__date")
             .annotate(
                 trades=Count("id"),
                 pl=Sum(pnl_expr, output_field=FloatField()),
             )
-            .order_by("day")
+            .order_by("journal_day__date")
         )
 
         # For R-metrics (avg/best/worst & win_rate), compute in Python to avoid relying
         # on a stored DB column. We accept either model field `r` or property `r_multiple`.
         out = []
         for row in base:
-            day = row["day"]
+            day = row["journal_day__date"]
             trades_count = int(row.get("trades") or 0)
             pl_val = float(row.get("pl") or 0.0)
 
             # Pull the day's trades to compute R metrics safely in Python.
             day_trades = Trade.objects.filter(
-                user=request.user, status="CLOSED", exit_time__date=day
+                user=request.user, status="CLOSED", journal_day__date=day
             )
             r_list = []
             wins = 0
