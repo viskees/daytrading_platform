@@ -31,10 +31,11 @@ import {
   deleteAdjustment,
   type AdjustmentReason,
   setUnauthorizedHandler,
+  updateTrade,
 } from "@/lib/api";
+import { onTradeClosed, emitTradeClosed } from "@/lib/events";
 import JournalTab from "./components/JournalTab";
 import TradeEditor from "./components/TradeEditor";
-import { updateTrade } from "./lib/api";
 import { initAccessTokenFromRefresh } from "@/lib/auth";
 
 /* =========================
@@ -394,6 +395,8 @@ function CloseTradeDialog({
       for (const f of shots) {
         await apiCreateAttachment(trade.id, f);
       }
+      // 🔔 broadcast: a trade has been closed (lets dashboard/calendar react immediately)
+      emitTradeClosed({ tradeId: trade.id });
       onClosed(trade.id);
       onClose();
     } catch {
@@ -452,6 +455,8 @@ export default function App() {
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
   const [dark, setDark] = useState<boolean>(getInitialDark());
   const [authed, setAuthed] = useState<boolean>(hasToken());
+  // bump this to force the Calendar to refetch its month
+  const [calendarKick, setCalendarKick] = useState(0);
 
   // Try to mint an access token from refresh cookie on load (if not already authed)
   useEffect(() => {
@@ -804,6 +809,12 @@ export default function App() {
       document.removeEventListener("visibilitychange", onVis);
     };
   }, [authed, refreshDashboard]);
+
+  // 🔔 When any trade is closed anywhere in the app, signal the calendar to refresh
+  useEffect(() => {
+    const off = onTradeClosed(() => setCalendarKick(k => k + 1));
+    return off;
+  }, []);
 
   // --- Detect local date rollover (e.g., at midnight) and refresh once ---
   useEffect(() => {
@@ -1379,6 +1390,8 @@ export default function App() {
               </div>
             </div>
             <TradesCalendar
+              // 👇 changes whenever a trade closes; Calendar should refetch month on change
+              refreshToken={calendarKick}
               dayStartEquity={dayStartEquity}
               maxDailyLossPct={risk.maxDailyLossPct}
               getMonthSummaries={getMonthSummaries}

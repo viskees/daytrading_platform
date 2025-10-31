@@ -18,6 +18,9 @@ type ApiTrade = {
   created_at?: string;  // if entry_time not present
 };
 
+import { emitTradeClosed } from "@/lib/events";
+
+
 // helper to normalize any "maybe-array" to a real array
 function toArray<T>(x: unknown): T[] {
   return Array.isArray(x) ? (x as T[]) : [];
@@ -37,10 +40,14 @@ function normalizeTrade(x: any) {
     stopLoss: x.stop_price ?? undefined,
     target: x.target_price ?? undefined,
     exitPrice: x.exit_price ?? undefined,
+    exitTime: x.exit_time || undefined,
     entryTime: x.entry_time || x.created_at || new Date().toISOString(),
     size: x.quantity || undefined,
     notes: x.notes || "",
     status: x.status,
+    // pass through backend-calculated fields when present
+    realizedPnl: typeof x.realized_pnl === "number" ? x.realized_pnl : undefined,
+    rMultiple: typeof x.r_multiple === "number" ? x.r_multiple : undefined,
     strategyTags: Array.from(
       new Set(
         rawTags
@@ -257,6 +264,10 @@ export async function updateTrade(
 }
 
 export async function closeTrade(id: number | string, payload: { exitPrice?: number; notes?: string; strategyTags?: string[] }) {
+  // Guard: prevent closing without an exit price (to avoid 0 P&L + broken coloring)
+  if (payload.exitPrice === undefined || payload.exitPrice === null || !Number.isFinite(Number(payload.exitPrice))) {
+    throw new Error("Please provide an exit price to close the trade.");
+  }
   const hasStrategy = Array.isArray(payload.strategyTags);
   const strategy_tag_ids = hasStrategy ? await mapTagNamesToIds(payload.strategyTags) : undefined;
   const res = await apiFetch(`/journal/trades/${id}/`, {
@@ -270,6 +281,17 @@ export async function closeTrade(id: number | string, payload: { exitPrice?: num
     }),
   });
   const json = await res.json();
+  // If backend doesn't compute these, keep them raw; Calendar can still compute fallback.
+  // Emit live event so Calendar refreshes immediately. Include a date hint so the Calendar can
+  // decide whether the closed trade falls inside the currently visible month.
+  try {
+    // Prefer exit_time (date of realization); fall back to entry_time/created_at if absent.
+    const iso = (json?.exit_time || json?.entry_time || json?.created_at || "").slice(0, 10);
+    const dateISO = iso && /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : undefined;
+    console.log("[api] closeTrade PATCH ok", { id, exitPrice: payload.exitPrice });
+    emitTradeClosed({ tradeId: json?.id, dateISO: (json?.exit_time || json?.entry_time || "").slice(0,10) });
+    console.log("[api] emitted trade:closed", { id: json?.id, exit_time: json?.exit_time });
+  } catch {}
   return normalizeTradeAsync(json);
 }
 
@@ -374,7 +396,7 @@ export async function authedFetch(
   const method = (init.method || "GET").toUpperCase();
   if (method !== "GET" && method !== "HEAD") {
     headers["X-CSRFToken"] = headers["X-CSRFToken"] || getCookie("csrftoken") || "";
-    if (!headers["Content-Type"] && init.body && !(init.body instanceof FormData)) {
+    if (!headers["Content-Type"] && init.body && !isFormData(init.body)) {
       headers["Content-Type"] = "application/json";
     }
   }
@@ -402,7 +424,7 @@ export async function authedFetch(
       // refresh failed: clear and bubble up so UI can redirect to login
       setAccessToken(null);
       try { localStorage.removeItem("jwt"); } catch {}
-      if (_onUnauthorized) _onUnauthorized();
+      if (onUnauthorized) onUnauthorized();
       throw new Error("Unauthorized; please log in again.");
     }
   }
