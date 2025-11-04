@@ -81,6 +81,8 @@ class TradeSerializer(serializers.ModelSerializer):
     attachments = AttachmentSerializer(many=True, read_only=True)
     risk_per_share = serializers.FloatField(read_only=True)
     r_multiple = serializers.FloatField(read_only=True)
+    # expose realized P/L computed property from model
+    realized_pnl = serializers.FloatField(read_only=True)
     # allow client to set explicit exit_time when closing (server may also set default)
     exit_time = serializers.DateTimeField(required=False, allow_null=True)
 
@@ -115,11 +117,13 @@ class TradeSerializer(serializers.ModelSerializer):
             "attachments",
             "risk_per_share",
             "r_multiple",
+            "realized_pnl",
         ]
         read_only_fields = [
             "entry_time",
             "risk_per_share",
             "r_multiple",
+            "realized_pnl",
             "attachments",
             "strategy_tags",
         ]

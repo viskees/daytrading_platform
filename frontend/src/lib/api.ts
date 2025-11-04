@@ -281,6 +281,32 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     .map((t) => (t && typeof t === "object" ? t.name : t))
     .filter(Boolean);
 
+  // ---- Fallbacks for computed fields (handles older API responses) ----
+  const qtyNum = Number(x.quantity || 0);
+  const entryNum = Number(x.entry_price);
+  const exitNum  = x.exit_price != null ? Number(x.exit_price) : null;
+  const stopNum  = x.stop_price != null ? Number(x.stop_price) : null;
+
+  // realized P/L fallback if server didn't send realized_pnl
+  let realizedPnlVal: number | undefined =
+    typeof x.realized_pnl === "number" ? x.realized_pnl : undefined;
+  if (realizedPnlVal === undefined && exitNum !== null && Number.isFinite(entryNum) && Number.isFinite(qtyNum)) {
+    const move = exitNum - entryNum;
+    realizedPnlVal = (x.side === "SHORT" ? -move : move) * qtyNum;
+  }
+
+  // R multiple fallback if server didn't send r_multiple
+  let rMultipleVal: number | null =
+    typeof x.r_multiple === "number" ? x.r_multiple : null;
+  if (rMultipleVal == null && exitNum !== null && stopNum !== null && Number.isFinite(entryNum)) {
+    const rps = Math.abs(entryNum - stopNum);
+    if (rps > 0) {
+      const move = exitNum - entryNum;
+      rMultipleVal = (x.side === "SHORT" ? -move : move) / rps;
+    }
+  }
+
+
   return {
     id: x.id,
     journal_day: x.journal_day,
@@ -296,8 +322,8 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     strategyTags: Array.from(new Set(tagNames)),
     entryTime: x.entry_time || x.created_at || new Date().toISOString(),
     exitTime: x.exit_time ?? undefined,
-    realizedPnl: typeof x.realized_pnl === "number" ? x.realized_pnl : undefined,
-    rMultiple: typeof x.r_multiple === "number" ? x.r_multiple : null,
+    realizedPnl: realizedPnlVal,
+    rMultiple: rMultipleVal,
     entryEmotion: x.entry_emotion ?? null,
     entryEmotionNote: x.entry_emotion_note ?? "",
     exitEmotion: x.exit_emotion ?? null,

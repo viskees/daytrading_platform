@@ -68,9 +68,15 @@ class JournalDay(models.Model):
 
     @property
     def realized_pnl(self):
+        """Realized P/L for the day from CLOSED trades only."""
         total = 0.0
-        for t in self.trades.all():
-            total += (float(t.exit_price or 0) - float(t.entry_price)) * (1 if t.side == "LONG" else -1) * t.quantity
+        for t in self.trades.filter(status="CLOSED"):
+            if t.exit_price is None or t.entry_price is None or t.quantity in (None, 0):
+                continue
+            move = float(t.exit_price) - float(t.entry_price)
+            if t.side == "SHORT":
+                move = -move
+            total += move * float(t.quantity)
         return round(total, 2)
 
     @property
@@ -115,7 +121,9 @@ class Trade(models.Model):
         ("CLOSED", "Closed"),
     ]
 
+    # Single Meta (combine ordering + indexes so indexes aren't lost)
     class Meta:
+        ordering = ["-entry_time"]
         indexes = [
             models.Index(fields=["user", "status", "exit_time"]),
         ]
@@ -143,25 +151,45 @@ class Trade(models.Model):
     exit_emotion_note = models.TextField(blank=True, default="")
     strategy_tags = models.ManyToManyField(StrategyTag, related_name="trades", blank=True)
 
-
-    class Meta:
-        ordering = ["-entry_time"]
-
     @property
     def risk_per_share(self):
-        if self.stop_price is None:
+        """Absolute (entry - stop). None if not computable."""
+        try:
+            if self.stop_price is None or self.entry_price is None:
+                return None
+            rps = abs(float(self.entry_price) - float(self.stop_price))
+            return rps if rps > 0 else None
+        except Exception:
             return None
-        return float(abs(self.entry_price - self.stop_price))
 
     @property
     def r_multiple(self):
-        if self.stop_price is None or self.exit_price is None:
+        """Signed R = (exit-entry)/risk_per_share, SHORT inverts the sign."""
+        try:
+            rps = self.risk_per_share
+            if rps in (None, 0):
+                return None
+            if self.exit_price is None or self.entry_price is None:
+                return None
+            move = float(self.exit_price) - float(self.entry_price)
+            if self.side == "SHORT":
+                move = -move
+            return round(move / float(rps), 2)
+        except Exception:
             return None
-        move = float(self.exit_price - self.entry_price)
-        if self.side == "SHORT":
-            move = -move
-        rps = self.risk_per_share or 0.0
-        return (move / rps) if rps else None
+        
+    @property
+    def realized_pnl(self):
+        """(exit - entry)*qty for LONG, (entry - exit)*qty for SHORT; 0.0 if not closed/invalid."""
+        try:
+            if self.exit_price is None or self.entry_price is None or self.quantity in (None, 0):
+                return 0.0
+            move = float(self.exit_price) - float(self.entry_price)
+            if self.side == "SHORT":
+                move = -move
+            return round(move * float(self.quantity), 2)
+        except Exception:
+            return 0.0
 
     def __str__(self):
         return f"{self.ticker} {self.side} x{self.quantity}"
