@@ -35,6 +35,19 @@ class Conflict(APIException):
     default_detail = "Conflict"
     default_code = "conflict"
 
+# --- Object-level permission to ensure only the owner can access a Trade object ---
+class IsOwnerOfTrade(permissions.BasePermission):
+    """
+    Allows access only to the owner of the Trade.
+    Works with DRF's object-permission flow (retrieve/update/destroy).
+    """
+    def has_object_permission(self, request, view, obj):
+        try:
+            return obj.user_id == request.user.id
+        except Exception:
+            return False
+
+
 class UserSettingsViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -127,7 +140,7 @@ class JournalDayViewSet(viewsets.ModelViewSet):
         return Response(data, status=code)
 
 class TradeViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOfTrade]
     serializer_class = TradeSerializer
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
     # richer filters so the Journal tab can do date ranges, ticker search, etc.
@@ -392,7 +405,9 @@ class TradeViewSet(viewsets.ModelViewSet):
             jd, _ = JournalDay.objects.get_or_create(user=request.user, date=exit_date)
             trade.journal_day = jd
         trade.save(update_fields=["exit_price", "exit_time", "status", "journal_day"])
-        return Response(TradeSerializer(trade).data)
+        # Use view's serializer (includes context=request for absolute image URLs downstream)
+        ser = self.get_serializer(trade)
+        return Response(ser.data)
 
 class StrategyTagViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -400,13 +415,23 @@ class StrategyTagViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return StrategyTag.objects.all()
 
-class AttachmentViewSet(mixins.CreateModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
+class AttachmentViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.CreateModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AttachmentSerializer
     parser_classes = [MultiPartParser, FormParser]  # <-- add this line
 
     def get_queryset(self):
-        return Attachment.objects.filter(trade__user=self.request.user)
+        qs = Attachment.objects.filter(trade__user=self.request.user)
+        trade_id = self.request.query_params.get("trade")
+        if trade_id:
+            qs = qs.filter(trade_id=trade_id)
+        return qs
 
     def perform_create(self, serializer):
         trade = serializer.validated_data.get('trade')

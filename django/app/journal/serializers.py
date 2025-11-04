@@ -1,10 +1,46 @@
+# journal/serializers.py
 from rest_framework import serializers
-from .models import JournalDay, Trade, StrategyTag, Attachment, UserSettings, AccountAdjustment
+from .models import (
+    JournalDay,
+    Trade,
+    StrategyTag,
+    Attachment,
+    UserSettings,
+    AccountAdjustment,
+    Emotion,
+)
 
 class StrategyTagSerializer(serializers.ModelSerializer):
+    """
+    Safe serializer for StrategyTag:
+    - Always returns id, name
+    - Optionally returns an 'image' URL *if* the model has a compatible attribute
+      (image/icon/thumbnail/thumb/logo). Otherwise null.
+    """
+    image = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = StrategyTag
-        fields = ("id", "name")
+        fields = ("id", "name", "image")
+
+    def get_image(self, obj):
+        # Gracefully support different possible attribute names or absence.
+        candidate = None
+        for attr in ("image", "icon", "thumbnail", "thumb", "logo"):
+            if hasattr(obj, attr):
+                candidate = getattr(obj, attr)
+                break
+        if not candidate:
+            return None
+        try:
+            url = candidate.url if hasattr(candidate, "url") else str(candidate)
+            request = self.context.get("request")
+            if request and isinstance(url, str) and url.startswith("/"):
+                return request.build_absolute_uri(url)
+            return url
+        except Exception:
+            return None
+
 
 class AttachmentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -20,6 +56,15 @@ class AttachmentSerializer(serializers.ModelSerializer):
         if ct and not ct.startswith("image/"):
             raise serializers.ValidationError("Only image uploads allowed")
         return f
+
+    # absolute URLs in responses (helpful for reverse proxies/CDNs).
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        img = data.get("image")
+        if request and isinstance(img, str) and img.startswith("/"):
+            data["image"] = request.build_absolute_uri(img)
+        return data
 
 
 class TradeSerializer(serializers.ModelSerializer):
@@ -39,6 +84,12 @@ class TradeSerializer(serializers.ModelSerializer):
     # allow client to set explicit exit_time when closing (server may also set default)
     exit_time = serializers.DateTimeField(required=False, allow_null=True)
 
+    # --- Emotions (explicit for API clarity) ---
+    entry_emotion = serializers.ChoiceField(choices=Emotion.choices, required=False)
+    entry_emotion_note = serializers.CharField(required=False, allow_blank=True, default="")
+    exit_emotion = serializers.ChoiceField(choices=Emotion.choices, required=False, allow_null=True)
+    exit_emotion_note = serializers.CharField(required=False, allow_blank=True, default="")
+
     class Meta:
         model = Trade
         fields = [
@@ -55,13 +106,23 @@ class TradeSerializer(serializers.ModelSerializer):
             "entry_time",
             "status",
             "notes",
+            "entry_emotion",
+            "entry_emotion_note",
+            "exit_emotion",
+            "exit_emotion_note",
             "strategy_tags",
             "strategy_tag_ids",
             "attachments",
             "risk_per_share",
             "r_multiple",
         ]
-        read_only_fields = ["entry_time", "risk_per_share", "r_multiple", "attachments", "strategy_tags"]
+        read_only_fields = [
+            "entry_time",
+            "risk_per_share",
+            "r_multiple",
+            "attachments",
+            "strategy_tags",
+        ]
 
     def validate(self, attrs):
         qty = attrs.get("quantity")
@@ -97,6 +158,7 @@ class TradeSerializer(serializers.ModelSerializer):
             instance.strategy_tags.set(tags)
         return instance
 
+
 class JournalDaySerializer(serializers.ModelSerializer):
     trades = TradeSerializer(many=True, read_only=True)
     realized_pnl = serializers.FloatField(read_only=True)
@@ -124,6 +186,7 @@ class UserSettingsSerializer(serializers.ModelSerializer):
         model = UserSettings
         fields = ["id", "dark_mode", "max_risk_per_trade_pct", "max_daily_loss_pct", "max_trades_per_day"]
 
+
 class AccountAdjustmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = AccountAdjustment
@@ -136,4 +199,4 @@ class AccountAdjustmentSerializer(serializers.ModelSerializer):
             "at_time",
             "created_at",
         )
-        read_only_fields = ("id", "created_at",)
+        read_only_fields = ("id", "created_at")

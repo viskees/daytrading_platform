@@ -37,6 +37,7 @@ import { onTradeClosed, emitTradeClosed } from "@/lib/events";
 import JournalTab from "./components/JournalTab";
 import TradeEditor from "./components/TradeEditor";
 import { initAccessTokenFromRefresh } from "@/lib/auth";
+import JournalDashboard from "@/pages/JournalDashboard";
 
 /* =========================
    Types (match Django API)
@@ -231,6 +232,8 @@ function NewTradeDialog({
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const toggleTag = (tag: string) => setTags(t => t.includes(tag) ? t.filter(x => x !== tag) : [...t, tag]);
+  const [entryEmotion, setEntryEmotion] = useState<"NEUTRAL" | "BIASED">("NEUTRAL");
+  const [entryEmotionNote, setEntryEmotionNote] = useState("");
 
 
   // $ risk for current inputs (to stop)
@@ -278,6 +281,8 @@ function NewTradeDialog({
         size: size ? Number(size) : undefined,
         notes,
         strategyTags: tags,
+        entryEmotion,
+        entryEmotionNote,
       });
       // optional uploads
       for (const f of shots) {
@@ -337,6 +342,36 @@ function NewTradeDialog({
           </div>
         </div>
         <div className="md:col-span-3">
+          <div className="text-xs mb-1">Emotion at entry</div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={entryEmotion === "NEUTRAL" ? "default" : "outline"}
+              onClick={() => setEntryEmotion("NEUTRAL")}
+            >
+              Neutral
+            </Button>
+            <Button
+              size="sm"
+              variant={entryEmotion === "BIASED" ? "default" : "outline"}
+              onClick={() => setEntryEmotion("BIASED")}
+            >
+              Biased
+            </Button>
+          </div>
+        <div className="mt-2">
+          <div className="text-xs mb-1">Entry emotion note (optional)</div>
+          <Textarea
+            value={entryEmotionNote}
+            onChange={(e) => setEntryEmotionNote(e.target.value)}
+            placeholder="Why did this feel neutral or biased?"
+            className="h-16"
+          />
+        </div>
+      </div>
+
+
+        <div className="md:col-span-3">
           <div className="text-xs mb-1">Notes</div>
           <Textarea value={notes} onChange={e => setNotes(e.target.value)} className="h-24" />
         </div>
@@ -384,6 +419,8 @@ function CloseTradeDialog({
   const [notes, setNotes] = useState(trade.notes ?? "");
   const [shots, setShots] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
+  const [exitEmotion, setExitEmotion] = useState<"NEUTRAL" | "BIASED">("NEUTRAL");
+  const [exitEmotionNote, setExitEmotionNote] = useState("");
 
   const submit = async () => {
     setSaving(true);
@@ -391,6 +428,8 @@ function CloseTradeDialog({
       await apiCloseTrade(trade.id, {
         exitPrice: exitPrice ? Number(exitPrice) : undefined,
         notes,
+        exitEmotion,
+        exitEmotionNote,
       });
       for (const f of shots) {
         await apiCreateAttachment(trade.id, f);
@@ -409,6 +448,34 @@ function CloseTradeDialog({
         <div>
           <div className="text-xs mb-1">Exit price</div>
           <Input type="number" value={exitPrice} onChange={e => setExitPrice(e.target.value ? Number(e.target.value) : "")} />
+        </div>
+        <div className="md:col-span-2">
+          <div className="text-xs mb-1">Emotion at exit</div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={exitEmotion === "NEUTRAL" ? "default" : "outline"}
+              onClick={() => setExitEmotion("NEUTRAL")}
+            >
+              Neutral
+            </Button>
+            <Button
+              size="sm"
+              variant={exitEmotion === "BIASED" ? "default" : "outline"}
+              onClick={() => setExitEmotion("BIASED")}
+            >
+              Biased
+            </Button>
+          </div>
+          <div className="mt-2">
+            <div className="text-xs mb-1">Exit emotion note (optional)</div>
+            <Textarea
+              value={exitEmotionNote}
+              onChange={(e) => setExitEmotionNote(e.target.value)}
+              placeholder="What did you feel at exit? fear, FOMO, revenge, etc."
+              className="h-16"
+            />
+          </div>
         </div>
         <div className="md:col-span-2">
           <div className="text-xs mb-1">Notes</div>
@@ -1405,12 +1472,12 @@ export default function App() {
         return <RiskSettings />;
       case "journal":
         return (
-          <Card>
-            <CardContent className="p-4">
-              <h2 className="font-bold">Trading Journal</h2>
-              <JournalTab />
-            </CardContent>
-          </Card>
+            <Card>
+              <CardContent className="p-0">
+                {/* Full new clickable calendar + trades + lightbox experience */}
+                <JournalDashboard />
+              </CardContent>
+            </Card>
         );
     }
   };

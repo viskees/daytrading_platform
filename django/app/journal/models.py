@@ -3,6 +3,9 @@ from django.conf import settings
 from decimal import Decimal
 from django.utils import timezone
 
+class Emotion(models.TextChoices):
+    NEUTRAL = "NEUTRAL", "Neutral"
+    BIASED  = "BIASED",  "Biased"
 
 class UserSettings(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="settings")
@@ -130,7 +133,14 @@ class Trade(models.Model):
     exit_time = models.DateTimeField(null=True, blank=True, db_index=True)
     status = models.CharField(max_length=6, choices=STATUS_CHOICES, default="OPEN")
     notes = models.TextField(blank=True)
-
+    entry_emotion = models.CharField(
+        max_length=16, choices=Emotion.choices, default=Emotion.NEUTRAL, blank=True
+    )
+    entry_emotion_note = models.TextField(blank=True, default="")
+    exit_emotion = models.CharField(
+        max_length=16, choices=Emotion.choices, blank=True, null=True
+    )
+    exit_emotion_note = models.TextField(blank=True, default="")
     strategy_tags = models.ManyToManyField(StrategyTag, related_name="trades", blank=True)
 
 
@@ -210,5 +220,4 @@ class AccountAdjustment(models.Model):
         sign = "+" if self.amount is not None and self.amount >= 0 else ""
         jd = getattr(self.journal_day, "date", "?")
         return f"{jd} {self.reason} {sign}{self.amount}"
-
 

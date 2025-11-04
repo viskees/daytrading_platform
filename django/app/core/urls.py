@@ -6,6 +6,8 @@ from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
 from accounts.auth import EmailOnlyTokenView
 from django.views.decorators.csrf import ensure_csrf_cookie
 from accounts.auth import CookieTokenObtainPairView, CookieTokenRefreshView, LogoutView
+from django.conf import settings
+from django.conf.urls.static import static
 
 # Import the concrete list of patterns explicitly
 from two_factor.urls import urlpatterns as tf_urls
@@ -36,3 +38,7 @@ urlpatterns = [
     # Do not swallow admin, api, static/media, or pgadmin with the SPA fallback
     re_path(r"^(?!admin/|api/|pgadmin/|static/|media/).*$", spa, name="spa"),
 ]
+
+# Serve uploaded files (images) in development
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
