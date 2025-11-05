@@ -130,10 +130,30 @@ class JournalDayViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(instance).data)
 
     def create(self, request, *args, **kwargs):
+        from decimal import Decimal
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         date = serializer.validated_data["date"]
+
+        # Create-or-return the day row
         obj, created = JournalDay.objects.get_or_create(user=request.user, date=date)
+
+        # If client did NOT send a day_start_equity, auto-carry from the previous day.
+        if created and "day_start_equity" not in request.data:
+            prev = (
+                JournalDay.objects
+                .filter(user=request.user, date__lt=date)
+                .order_by("-date")
+                .first()
+            )
+            if prev:
+                try:
+                    obj.day_start_equity = Decimal(str(prev.effective_equity))
+                    obj.save(update_fields=["day_start_equity"])
+                except Exception:
+                    # fall back silently if prev cannot be evaluated
+                    pass
+
         ser = self.get_serializer(obj)
         data = ser.data | {"existing": (not created)}
         code = status.HTTP_201_CREATED if created else status.HTTP_200_OK

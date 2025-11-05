@@ -631,8 +631,23 @@ export async function getOrCreateJournalDay(date: string): Promise<JournalDay> {
 
 export async function listAdjustments(journalDayId?: number | null) {
   if (!Number.isInteger(journalDayId as number) || (journalDayId as number) <= 0) return [];
-  const res = await authedFetch(`/api/journal/account/adjustments/?journal_day=${journalDayId}`);
-  return res.json();
+  const res = await authedFetch(
+    `/api/journal/account/adjustments/?journal_day=${journalDayId}`
+  );
+  const j = await res.json();
+
+  // Normalize pagination (array or {results: []})
+  const rows = Array.isArray(j) ? j : j?.results ?? [];
+
+  // Normalize field names that the table expects
+  return rows.map((r: any) => ({
+    id: r.id,
+    // prefer at_time (event time); fall back to created_at if needed
+    at_time: r.at_time ?? r.created_at ?? null,
+    amount: Number(r.amount ?? 0),
+    reason: String(r.reason ?? ""),
+    note: r.note ?? "",
+  }));
 }
 
 export async function getTodayJournalDay(dateISO?: string) {
