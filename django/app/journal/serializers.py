@@ -10,6 +10,8 @@ from .models import (
     Emotion,
 )
 
+from decimal import Decimal
+
 class StrategyTagSerializer(serializers.ModelSerializer):
     """
     Safe serializer for StrategyTag:
@@ -204,3 +206,32 @@ class AccountAdjustmentSerializer(serializers.ModelSerializer):
             "created_at",
         )
         read_only_fields = ("id", "created_at")
+
+    
+    def validate(self, attrs):
+        """
+        Normalize the sign of `amount` by reason:
+        - DEPOSIT     => positive  (+abs)
+        - WITHDRAWAL  => negative  (-abs)
+        - FEE         => negative  (-abs)
+        - CORRECTION  => keep caller's sign (no normalization)
+        """
+        amt = attrs.get("amount", None)
+        reason = attrs.get("reason", None)
+        if amt is None:
+            raise serializers.ValidationError({"amount": "This field is required."})
+
+        # Safely coerce to Decimal
+        try:
+            q = amt if isinstance(amt, Decimal) else Decimal(str(amt))
+        except Exception:
+            raise serializers.ValidationError({"amount": "Invalid amount."})
+
+        if reason in (AccountAdjustment.REASON_WITHDRAWAL, AccountAdjustment.REASON_FEE):
+            q = -abs(q)
+        elif reason == AccountAdjustment.REASON_DEPOSIT:
+            q = abs(q)
+        # CORRECTION => unchanged
+
+        attrs["amount"] = q
+        return attrs
