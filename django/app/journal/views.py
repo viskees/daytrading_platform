@@ -138,21 +138,27 @@ class JournalDayViewSet(viewsets.ModelViewSet):
         # Create-or-return the day row
         obj, created = JournalDay.objects.get_or_create(user=request.user, date=date)
 
-        # If client did NOT send a day_start_equity, auto-carry from the previous day.
-        if created and "day_start_equity" not in request.data:
+        # If it's a freshly created day, auto-carry forward the last day’s equity
+        if created:
+            from django.utils.timezone import now
+            # previous day strictly before the requested date
             prev = (
                 JournalDay.objects
                 .filter(user=request.user, date__lt=date)
                 .order_by("-date")
                 .first()
             )
-            if prev:
-                try:
-                    obj.day_start_equity = Decimal(str(prev.effective_equity))
-                    obj.save(update_fields=["day_start_equity"])
-                except Exception:
-                    # fall back silently if prev cannot be evaluated
-                    pass
+            if prev and (obj.day_start_equity is None or float(obj.day_start_equity) == 0.0):
+                # Prefer an explicit day_end_equity; else use effective_equity fallback
+                if prev.day_end_equity is not None:
+                    carry = float(prev.day_end_equity)
+                else:
+                    try:
+                        carry = float(prev.effective_equity)
+                    except Exception:
+                        carry = float(prev.day_start_equity or 0.0)
+                obj.day_start_equity = carry
+                obj.save(update_fields=["day_start_equity"])
 
         ser = self.get_serializer(obj)
         data = ser.data | {"existing": (not created)}

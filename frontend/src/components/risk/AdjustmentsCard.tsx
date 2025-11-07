@@ -4,11 +4,14 @@ import { getTodayJournalDay, listAdjustments, createAdjustment, deleteAdjustment
 export default function AdjustmentsCard() {
   const [journalDayId, setJournalDayId] = React.useState<number | null>(null);
   const [rows, setRows] = React.useState<any[]>([]);
-  const [amount, setAmount] = React.useState<number>(0);
+  const [amount, setAmount] = React.useState<string>("");
   const [reason, setReason] = React.useState<AdjustmentReason>('DEPOSIT');
   const [note, setNote] = React.useState<string>('');
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+
+  const signByReason = (r: string, v: number) =>
+    r === "WITHDRAWAL" || r === "FEE" ? -Math.abs(v) : (r === "DEPOSIT" ? Math.abs(v) : v);
 
   const load = React.useCallback(async () => {
     const today = new Date().toISOString().slice(0, 10);
@@ -32,8 +35,15 @@ export default function AdjustmentsCard() {
   const add = async () => {
     if (!journalDayId) return;
     try {
-      await createAdjustment({ journal_day: journalDayId, amount: Number(amount), reason, note });
-      setAmount(0); setNote('');
+      const raw = parseFloat(amount);
+      if (!Number.isFinite(raw)) {
+        setError('Please enter a valid amount.');
+        return;
+      }
+      const signed = signByReason(reason, raw);
+      await createAdjustment({ journal_day: journalDayId, amount: signed, reason, note });
+      setAmount(""); 
+      setNote('');
       await load();
     } catch (e:any) {
       setError(e?.message ?? 'Failed to add adjustment');
@@ -58,8 +68,14 @@ export default function AdjustmentsCard() {
       <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end mb-4">
         <label className="block md:col-span-2">
           <span className="text-sm text-neutral-400">Amount</span>
-          <input type="number" step="0.01" className="mt-1 w-full rounded-xl bg-neutral-900 border border-neutral-700 p-2"
-                 value={amount} onChange={(e)=>setAmount(Number(e.target.value))}/>
+          <input
+            type="text"
+            inputMode="decimal"
+            className="mt-1 w-full rounded-xl bg-neutral-900 border border-neutral-700 p-2"
+            value={amount}
+            onChange={(e)=>setAmount(e.target.value)}
+            placeholder="0.00"
+          />
         </label>
         <label className="block">
           <span className="text-sm text-neutral-400">Reason</span>

@@ -13,12 +13,13 @@ export default function EquitySection() {
   const [error, setError] = React.useState<string | null>(null);
 
   const [journalDayId, setJournalDayId] = React.useState<number | null>(null);
-  const [dayStartEquity, setDayStartEquity] = React.useState<number>(0);
+  // keep as string while typing to avoid flicker/reset
+  const [dayStartEquity, setDayStartEquity] = React.useState<string>("");
   const [effectiveEquity, setEffectiveEquity] = React.useState<number>(0);
   const [adjustmentsTotal, setAdjustmentsTotal] = React.useState<number>(0);
 
   const [adjRows, setAdjRows] = React.useState<any[]>([]);
-  const [adjAmount, setAdjAmount] = React.useState<number>(0);
+  const [adjAmount, setAdjAmount] = React.useState<string>("");
   const [adjReason, setAdjReason] = React.useState<AdjustmentReason>('DEPOSIT');
   const [adjNote, setAdjNote] = React.useState<string>('');
   const [saving, setSaving] = React.useState(false);
@@ -30,7 +31,11 @@ export default function EquitySection() {
       const d = await getTodayJournalDay();
       if (!d) { setError('No Journal Day for today — create it from Journal first.'); return; }
       setJournalDayId(d.id);
-      setDayStartEquity(Number(d.day_start_equity || 0));
+      // seed as string; allow blank entry if you want to type from scratch
+      const seed = d.day_start_equity !== undefined && d.day_start_equity !== null
+        ? String(d.day_start_equity)
+        : "";
+      setDayStartEquity(seed);
       setEffectiveEquity(Number(d.effective_equity || 0));
       setAdjustmentsTotal(Number(d.adjustments_total || 0));
       const rows = await listAdjustments(d.id);
@@ -49,9 +54,20 @@ export default function EquitySection() {
     setSaving(true);
     setError(null);
     try {
-      const updated = await patchDayStartEquity(journalDayId, Number(dayStartEquity));
+      // parse the string (allow comma decimal just in case)
+      const parsed = parseFloat(String(dayStartEquity).replace(',', '.'));
+      if (!Number.isFinite(parsed)) {
+        setError('Please enter a valid number for day start equity.');
+        setSaving(false);
+        return;
+      }
+      const updated = await patchDayStartEquity(journalDayId, parsed);
       setEffectiveEquity(Number(updated.effective_equity || 0));
       setAdjustmentsTotal(Number(updated.adjustments_total || 0));
+      // normalize displayed value from server echo
+      setDayStartEquity(
+        updated?.day_start_equity !== undefined && updated?.day_start_equity !== null ? String(updated.day_start_equity) : ""
+      );
     } catch (e: any) {
       setError(e?.message ?? 'Failed to save day start equity');
     } finally {
@@ -59,17 +75,31 @@ export default function EquitySection() {
     }
   };
 
+  const signedByReason = (reason: AdjustmentReason, raw: number) => {
+    if (!Number.isFinite(raw)) return NaN;
+    if (reason === 'WITHDRAWAL' || reason === 'FEE') return -Math.abs(raw);
+    if (reason === 'DEPOSIT') return Math.abs(raw);
+    return raw; // CORRECTION
+  };
+
+
   const addAdjustment = async () => {
     if (!journalDayId) return;
     setError(null);
     try {
+      const raw = parseFloat(adjAmount);
+      if (!Number.isFinite(raw)) {
+        setError('Please enter a valid number for Amount.');
+        return;
+      }
+      const signed = signedByReason(adjReason, raw);
       await createAdjustment({
         journal_day: journalDayId,
-        amount: Number(adjAmount),
+        amount: signed,
         reason: adjReason,
         note: adjNote || '',
       });
-      setAdjAmount(0);
+      setAdjAmount("");
       setAdjNote('');
       await load();
     } catch (e: any) {
@@ -99,11 +129,13 @@ export default function EquitySection() {
         <label className="block">
           <span className="text-sm text-neutral-400">Day start equity (today)</span>
           <input
-            type="number"
-            step="0.01"
+            type="text"
+            inputMode="decimal"
             className="mt-1 w-full rounded-xl bg-neutral-900 border border-neutral-700 p-2"
             value={dayStartEquity}
-            onChange={(e) => setDayStartEquity(Number(e.target.value))}
+            onChange={(e) => setDayStartEquity(e.target.value)}
+            onBlur={saveStartEquity}
+            placeholder="0.00"
           />
         </label>
 
@@ -133,10 +165,12 @@ export default function EquitySection() {
           <label className="block md:col-span-2">
             <span className="text-sm text-neutral-400">Amount</span>
             <input
-              type="number" step="0.01"
+              type="text"
+              inputMode="decimal"
               className="mt-1 w-full rounded-xl bg-neutral-900 border border-neutral-700 p-2"
               value={adjAmount}
-              onChange={(e) => setAdjAmount(Number(e.target.value))}
+              onChange={(e) => setAdjAmount(e.target.value)}
+              placeholder="Amount"
             />
           </label>
           <label className="block">

@@ -210,28 +210,24 @@ class AccountAdjustmentSerializer(serializers.ModelSerializer):
     
     def validate(self, attrs):
         """
-        Normalize the sign of `amount` by reason:
-        - DEPOSIT     => positive  (+abs)
-        - WITHDRAWAL  => negative  (-abs)
-        - FEE         => negative  (-abs)
-        - CORRECTION  => keep caller's sign (no normalization)
+        Normalize amount sign by reason to prevent mistakes:
+        - DEPOSIT  -> positive
+        - WITHDRAWAL / FEE -> negative
+        - CORRECTION -> as provided (can be +/-)
         """
-        amt = attrs.get("amount", None)
-        reason = attrs.get("reason", None)
-        if amt is None:
-            raise serializers.ValidationError({"amount": "This field is required."})
-
-        # Safely coerce to Decimal
+        from .models import AccountAdjustment as AA
+        amt = attrs.get("amount")
+        reason = attrs.get("reason")
         try:
-            q = amt if isinstance(amt, Decimal) else Decimal(str(amt))
+            amt_f = float(amt)
         except Exception:
             raise serializers.ValidationError({"amount": "Invalid amount."})
 
-        if reason in (AccountAdjustment.REASON_WITHDRAWAL, AccountAdjustment.REASON_FEE):
-            q = -abs(q)
-        elif reason == AccountAdjustment.REASON_DEPOSIT:
-            q = abs(q)
-        # CORRECTION => unchanged
+        if reason in (AA.REASON_WITHDRAWAL, AA.REASON_FEE):
+            amt_f = -abs(amt_f)
+        elif reason == AA.REASON_DEPOSIT:
+            amt_f = abs(amt_f)
+        # CORRECTION: leave as-is
 
-        attrs["amount"] = q
+        attrs["amount"] = amt_f
         return attrs
