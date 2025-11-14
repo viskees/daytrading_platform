@@ -1,4 +1,3 @@
-
 services:
   # build the SPA once; no long-lived Node
   frontend-build:
@@ -8,7 +7,7 @@ services:
     command: sh -lc "npm ci || npm install; npm run build"
     volumes:
       - ./:/workspace
-      # ⬇️ with bind mounts, no need to mount a volume here
+
   traefik:
     image: traefik:v3.1
     command: --providers.docker --providers.file.directory=/etc/traefik/dynamic
@@ -20,18 +19,9 @@ services:
       - ./docker/traefik/dev/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./docker/traefik/dev/dynamic:/etc/traefik/dynamic:ro
       - ./docker/traefik/dev:/etc/ssl/dev:ro
-    networks: [web]   # Traefik only needs to see the 'web' network
+    networks: [web]
     labels:
-      - traefik.enable=true   # (no routers here --> defined at django service level)
-
-  # # ensure staticfiles volume has correct ownership
-  # static-perms:
-  #   image: alpine:3.20
-  #   user: "0:0"   # run as root
-  #   command: sh -lc "mkdir -p /srv/static && chown -R ${UID:-1000}:${GID:-1000} /srv/static"
-  #   volumes:
-  #     - staticfiles_dev:/srv/static
-  #   restart: "no"
+      - traefik.enable=true
 
   django:
     user: "${UID:-1000}:${GID:-1000}"
@@ -42,8 +32,7 @@ services:
       - ./django/app:/app/app
       - ./.env.dev:/app/.env.dev:ro
       - ./django/app/staticfiles:/app/app/staticfiles
-      #- media_dev:/app/app/media
-      - ./django/app/media:/app/app/media     # <-- bind mount (same as Caddy)
+      - ./django/app/media:/app/app/media
     networks: [web, internal]
     expose: ["8000"]
     depends_on:
@@ -52,23 +41,19 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=daytrading_platform_web
-      # main site
-      - traefik.http.routers.django.rule=Host(`localhost`) && PathPrefix(`/`)
-      - traefik.http.routers.django.entrypoints=websecure
-      - traefik.http.routers.django.tls=true
-      - traefik.http.routers.django.service=django-svc
-      - traefik.http.services.django-svc.loadbalancer.server.port=8000
-      # admin host
-      - traefik.http.routers.django-admin.rule=Host(`admin.localhost`) && PathPrefix(`/admin`)
-      - traefik.http.routers.django-admin.entrypoints=websecure
-      - traefik.http.routers.django-admin.tls=true
-      - traefik.http.routers.django-admin.service=django-svc
-      - traefik.http.routers.django-admin.priority=1000
-      # root redirect on admin host
+      # main site on localhost
+      - traefik.http.routers.django-main.rule=Host(`localhost`)
+      - traefik.http.routers.django-main.entrypoints=websecure
+      - traefik.http.routers.django-main.tls=true
+      - traefik.http.routers.django-main.service=django-svc
+      # admin on admin.localhost (same Django service)
       - traefik.http.routers.django-admin.rule=Host(`admin.localhost`)
       - traefik.http.routers.django-admin.entrypoints=websecure
       - traefik.http.routers.django-admin.tls=true
       - traefik.http.routers.django-admin.service=django-svc
+      - traefik.http.routers.django-admin.priority=1000
+      # shared service definition
+      - traefik.http.services.django-svc.loadbalancer.server.port=8000
 
   postgres:
     image: postgres:16
@@ -107,6 +92,7 @@ services:
     networks: [web]
     labels:
       - traefik.enable=true
+      - traefik.docker.network=daytrading_platform_web
       - traefik.http.routers.static.rule=(Host(`localhost`) || Host(`admin.localhost`)) && (PathPrefix(`/static`) || PathPrefix(`/media`))
       - traefik.http.routers.static.entrypoints=websecure
       - traefik.http.routers.static.tls=true
@@ -120,4 +106,3 @@ networks:
 volumes:
   pgdata_dev:
   pgadmin_dev:
-  #media_dev:

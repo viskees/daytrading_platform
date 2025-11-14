@@ -61,12 +61,13 @@ services:
         condition: service_completed_successfully
     labels:
       - traefik.enable=true
+      - traefik.docker.network=daytrading_platform_web
       - traefik.http.routers.django.rule=Host(`${TRAEFIK_DOMAIN}`)
       - traefik.http.routers.django.entrypoints=websecure
       - traefik.http.routers.django.tls.certresolver=letsencrypt
       - traefik.http.routers.django.service=django-svc
-      - traefik.http.services.django-svc.loadbalancer.server.port=8000
       - traefik.http.routers.django.middlewares=secure-headers@docker,csp-relaxed@docker
+      - traefik.http.services.django-svc.loadbalancer.server.port=8000
 
   static:
     image: caddy:2-alpine
@@ -76,14 +77,14 @@ services:
       - ./docker/static/prod/Caddyfile:/etc/caddy/Caddyfile:ro
     labels:
       - traefik.enable=true
+      - traefik.docker.network=daytrading_platform_web
       - traefik.http.routers.static.rule=Host(`${TRAEFIK_DOMAIN}`) && PathPrefix(`/static`)
       - traefik.http.routers.static.entrypoints=websecure
       - traefik.http.routers.static.tls.certresolver=letsencrypt
       - traefik.http.routers.static.priority=100
-      - traefik.http.routers.static.middlewares=static-strip@docker
+      - traefik.http.routers.static.middlewares=static-strip@docker,secure-headers@docker
       - traefik.http.middlewares.static-strip.stripprefix.prefixes=/static
       - traefik.http.services.static.loadbalancer.server.port=80
-      - traefik.http.routers.static.middlewares=secure-headers@docker
 
   postgres:
     image: postgres:16
@@ -106,6 +107,7 @@ services:
       - pgadmin_prod:/var/lib/pgadmin
     labels:
       - traefik.enable=true
+      - traefik.docker.network=daytrading_platform_web
       - traefik.http.routers.pgadmin.rule=Host(`pgadmin.${TRAEFIK_DOMAIN}`)
       - traefik.http.routers.pgadmin.entrypoints=websecure
       - traefik.http.routers.pgadmin.tls.certresolver=letsencrypt

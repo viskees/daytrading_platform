@@ -187,3 +187,7 @@ CSRF_COOKIE_SAMESITE = "Lax"        # or "None" (requires HTTPS)
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+LOGIN_URL = "/accounts/login/"
+LOGIN_REDIRECT_URL = "/admin/"
+LOGOUT_REDIRECT_URL = "/"

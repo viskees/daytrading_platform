@@ -19,7 +19,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
 
     # ✅ Django auth under /account/
-    path("account/", include("django.contrib.auth.urls")),
+    path("accounts/", include("django.contrib.auth.urls")),
 
     # Mount 2FA AT ROOT, and pass the tuple directly to include()
     # (it already carries app_name='two_factor')
@@ -36,7 +36,7 @@ urlpatterns = [
 
     # SPA fallback
     # Do not swallow admin, api, static/media, or pgadmin with the SPA fallback
-    re_path(r"^(?!admin/|api/|pgadmin/|static/|media/).*$", spa, name="spa"),
+    re_path(r"^(?!admin/|accounts/login/|api/|pgadmin/|static/|media/).*$", spa, name="spa"),
 ]
 
 # Serve uploaded files (images) in development
