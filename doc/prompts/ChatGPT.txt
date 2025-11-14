@@ -1,0 +1,110 @@
+🔹 1. Coding Prompts
+A. Backend (Django, Celery, SQLite/Postgres)
+Act as a senior Django backend developer.
+Context: I’m building a daytrading app with Django + Celery + Redis.
+Task: Write a Celery task that fetches stock data from [API name] every 15 minutes,
+updates my `Ticker` model (fields: ticker, price, volume, float, catalyst_score),
+and logs the result into SQLite.
+Constraints:
+- Class-based design
+- Use existing model fields
+- Return full code, ready to paste into `tasks.py`
+Output format: Full Python code only.
+
+B. API Integration
+Act as a Python integration engineer.
+Context: My app uses external APIs (Finviz, NewsAPI, SEC, Twitter, IBKR).
+Task: Write a Python client wrapper for the [API name] that:
+- Handles authentication
+- Normalizes data into dicts with keys: ticker, datetime, headline, sentiment, relevance_score
+- Can be used inside Celery tasks.
+Constraints: Use `requests` and retry logic.
+Output format: Full Python module, ready to drop into `scanner_modules.py`.
+
+🔹 2. Risk Management Prompts
+A. Policy Enforcement
+Act as a trading risk manager.
+Context: My `RiskPolicy` class enforces:
+- Max 2% risk per trade
+- Max 4% daily loss
+- Max 4R daily risk
+- Max 5 trades/day
+Task: Extend my `RiskPolicy` with logic that:
+- Checks if thresholds are exceeded
+- Locks trading actions if breached
+- Returns structured JSON: {status, reason, allowed_actions}.
+Constraints: Must be pure Python, reusable in both CLI and Django views.
+Output format: Full Python class.
+
+B. Explanations
+Explain how this risk policy logic works in plain English.
+Audience: Beginner trader.
+Focus on why equity vs day-start equity matters, and why lockouts prevent emotional trading.
+
+🔹 3. Journaling Prompts
+A. Trade Logging
+Act as a developer + trading coach.
+Context: I want an automatic journaling system.
+Task: Write a Python function that logs each trade with:
+- ticker, entry, exit, position_size, R multiple, strategy tags, catalyst notes, chart image link.
+Constraints: Store in SQLite `journal.db`.
+Output format: Full code with schema + insert function.
+
+B. Reflection Questions
+Generate journaling prompts for traders after each trade.
+Format as a checklist with free-text answers:
+- What went right?
+- What went wrong?
+- Did I follow my risk policy?
+- Would I take this trade again? Why/why not?
+
+🔹 4. Frontend (SPA) Prompts
+A. User Settings (Dark Mode, Filters)
+Act as a React/Tailwind frontend developer.
+Context: My SPA uses React + Tailwind, Django serves as API.
+Task: Add a user settings page with:
+- Dark mode toggle (persisted in `/api/user/settings`)
+- Editable Finviz filter dropdowns
+Constraints: Must call Django REST endpoints for save/load.
+Output format: React component code + API request examples.
+
+B. Live Top 10 Table
+Act as a frontend engineer.
+Task: Build a React component `Top10Table` that:
+- Displays ticker, score, catalyst impact, combined score
+- Auto-refreshes every 15 minutes via WebSocket
+- Shows "Scraping in progress…" message during updates
+Constraints: Tailwind styling, minimal/clean look.
+Output format: React component code.
+
+🔹 5. Agent Mode Prompts
+A. Continuous Monitoring
+Act as an autonomous trading agent.
+Context: My app scrapes tickers, catalysts, and risk metrics.
+Task: Design a loop that:
+- Fetches data every 15 minutes
+- Updates DB with top 10 tickers
+- Runs RiskPolicy checks
+- Notifies user if trading lockout is triggered
+Constraints: Python pseudo-code with Celery integration.
+Output format: Step-by-step plan + code skeleton.
+
+B. Human-in-the-Loop Alerts
+Act as a trading assistant.
+Given today’s trades, catalysts, and equity:
+- Summarize risk status
+- Highlight top 3 catalysts
+- Suggest whether to continue or stop trading today
+Output format: Short actionable summary (max 5 bullet points).
+
+🔹 6. Code Review / Debugging Prompts
+Review this Django model / Celery task code for:
+- Performance
+- Readability
+- Best practices (indexes, error handling, scaling)
+Suggest improvements and return improved code.
+
+Debug this Python error:
+<PASTE ERROR LOG>
+Context: Running Django with Celery workers inside Docker.
+Suggest step-by-step fixes.

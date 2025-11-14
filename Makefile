@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help dev-up dev-down dev-logs django-shell superuser prod-up prod-down prod-logs dev-restart-django dev-logs-django dev-logs-traefik
+.PHONY: help dev-up dev-down dev-logs django-shell superuser prod-up prod-down prod-logs dev-restart-django dev-logs-django dev-logs-traefik frontend-build frontend-clean
 
 help:
 	@echo "Dev:"
@@ -15,7 +15,9 @@ help:
 	@echo "  make superuser      # create django superuser (dev)"
 
 dev-up:
-	docker compose -f docker-compose.dev.yml up -d --build
+	make frontend-build
+	make ma
+	docker compose --env-file .env.dev -f docker-compose.dev.yml up -d
 
 dev-down:
 	docker compose -f docker-compose.dev.yml down -v
@@ -29,6 +31,12 @@ django-shell:
 superuser:
 	docker compose -f docker-compose.dev.yml exec django python /app/app/manage.py createsuperuser
 
+makemigrations:
+	docker compose -f docker-compose.dev.yml exec django python /app/app/manage.py makemigrations
+
+migrate:
+	docker compose -f docker-compose.dev.yml exec django python /app/app/manage.py migrate
+
 prod-up:
 	docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 
@@ -38,7 +46,7 @@ prod-down:
 prod-logs:
 	docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f --tail=200
 
-dev-restart-django:
+ma:
 	docker compose -f docker-compose.dev.yml up -d --no-deps --build django
 
 dev-logs-django:
@@ -46,3 +54,9 @@ dev-logs-django:
 
 dev-logs-traefik:
 	docker compose -f docker-compose.dev.yml logs -f traefik
+
+frontend-build:
+	docker compose --env-file .env.dev -f docker-compose.dev.yml run --rm frontend-build
+
+frontend-clean:
+	rm -rf django/app/staticfiles/frontend

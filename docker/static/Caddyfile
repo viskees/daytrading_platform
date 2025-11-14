@@ -1,12 +1,18 @@
 :80 {
+  handle_path /static* {
     root * /srv/static
     encode zstd gzip
     file_server
 
-    # Long cache for hashed filenames Django emits (e.g., app.8f3c2a1a.css)
-    @hashed path_regexp hashed ^/static/.+\.[0-9a-f]{8,}\.
+    @hashed path_regexp hashed ^/.+\.[0-9a-f]{8,}\.
     header @hashed Cache-Control "public, max-age=31536000, immutable"
+    header /* Cache-Control "public, max-age=3600"
+  }
 
-    # Default cache for other static
-    header /static/* Cache-Control "public, max-age=3600"
+  handle_path /media* {
+    root * /srv/media
+    encode zstd gzip
+    file_server
+    header /* Cache-Control "public, max-age=300"
+  }
 }
