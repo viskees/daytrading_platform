@@ -30,7 +30,7 @@ services:
       # Lock down powerful APIs by default
       - "traefik.http.middlewares.secure-headers.headers.permissionsPolicy=camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 
-      # Optional: a relaxed CSP that won't break Django admin (tighten later)
+      # Relaxed CSP
       - "traefik.http.middlewares.csp-relaxed.headers.customResponseHeaders.Content-Security-Policy=default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; font-src 'self' data:; connect-src 'self'"
 
   static-perms:
@@ -62,11 +62,22 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=daytrading_platform_web
-      - traefik.http.routers.django.rule=Host(`${TRAEFIK_DOMAIN}`)
+
+      # main site
+      - traefik.http.routers.django.rule=Host(`trade-journal.nl`)
       - traefik.http.routers.django.entrypoints=websecure
       - traefik.http.routers.django.tls.certresolver=letsencrypt
       - traefik.http.routers.django.service=django-svc
       - traefik.http.routers.django.middlewares=secure-headers@docker,csp-relaxed@docker
+
+      # admin site
+      - traefik.http.routers.django-admin.rule=Host(`admin.trade-journal.nl`)
+      - traefik.http.routers.django-admin.entrypoints=websecure
+      - traefik.http.routers.django-admin.tls.certresolver=letsencrypt
+      - traefik.http.routers.django-admin.service=django-svc
+      - traefik.http.routers.django-admin.middlewares=secure-headers@docker,csp-relaxed@docker
+      - traefik.http.routers.django-admin.priority=1000
+
       - traefik.http.services.django-svc.loadbalancer.server.port=8000
 
   static:
@@ -78,10 +89,10 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=daytrading_platform_web
-      - traefik.http.routers.static.rule=Host(`${TRAEFIK_DOMAIN}`) && PathPrefix(`/static`)
+      - traefik.http.routers.static.rule=Host(`trade-journal.nl`) && PathPrefix(`/static`)
       - traefik.http.routers.static.entrypoints=websecure
       - traefik.http.routers.static.tls.certresolver=letsencrypt
-      - traefik.http.routers.static.priority=100
+      - traefik.http.routers.static.priority=1500
       - traefik.http.routers.static.middlewares=static-strip@docker,secure-headers@docker
       - traefik.http.middlewares.static-strip.stripprefix.prefixes=/static
       - traefik.http.services.static.loadbalancer.server.port=80
@@ -108,7 +119,7 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=daytrading_platform_web
-      - traefik.http.routers.pgadmin.rule=Host(`pgadmin.${TRAEFIK_DOMAIN}`)
+      - traefik.http.routers.pgadmin.rule=Host(`pgadmin.trade-journal.nl`)
       - traefik.http.routers.pgadmin.entrypoints=websecure
       - traefik.http.routers.pgadmin.tls.certresolver=letsencrypt
       - traefik.http.services.pgadmin.loadbalancer.server.port=80
