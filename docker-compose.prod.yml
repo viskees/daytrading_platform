@@ -12,6 +12,9 @@ services:
       - ./docker/traefik/prod/dynamic:/etc/traefik/dynamic:ro
       - ./docker/traefik/acme:/acme
     networks: [web]
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - DOCKER_API_VERSION=1.44   # 👈 match the *minimum* from `docker version`
     labels:
       - traefik.enable=true
 
