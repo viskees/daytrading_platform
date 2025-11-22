@@ -1,3 +1,4 @@
 /admin and /pgadmin dont route correctly
 Dashboard - total equity is filled next day, but on the risk page Effective equity is not
 feature request tab
+dashboard/welcome-page/home-page --> best trade ever + best trade of the day
