@@ -9,7 +9,7 @@ services:
       - ./:/workspace
 
   traefik:
-    image: traefik:v3.1
+    image: traefik:v3.6
     command: --providers.docker --providers.file.directory=/etc/traefik/dynamic
     ports:
       - "80:80"    # only to redirect to 443
