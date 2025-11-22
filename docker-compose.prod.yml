@@ -1,4 +1,11 @@
 services:
+  frontend-build:
+    image: node:20
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /workspace/frontend
+    command: sh -lc "npm ci || npm install; npm run build"
+    volumes:
+      - ./:/workspace
   traefik:
     image: traefik:v3.6
     env_file: .env.prod
@@ -83,12 +90,13 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=daytrading_platform_web
-      - traefik.http.routers.static.rule=Host(`trade-journal.nl`) && PathPrefix(`/static`)
+      # serve /static and /media on trade-journal.nl
+      - traefik.http.routers.static.rule=Host(`trade-journal.nl`) && (PathPrefix(`/static`) || PathPrefix(`/media`))
       - traefik.http.routers.static.entrypoints=websecure
       - traefik.http.routers.static.tls.certresolver=letsencrypt
       - traefik.http.routers.static.priority=1500
-      - traefik.http.routers.static.middlewares=static-strip@docker,secure-headers@docker
-      - traefik.http.middlewares.static-strip.stripprefix.prefixes=/static
+      # no more stripPrefix; Caddy expects /static and /media
+      - traefik.http.routers.static.middlewares=secure-headers@docker
       - traefik.http.services.static.loadbalancer.server.port=80
 
   postgres:
