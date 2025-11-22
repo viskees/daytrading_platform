@@ -28,6 +28,8 @@ help:
 	@echo "  make prod-up          # start prod stack (build & up)"
 	@echo "  make prod-down        # stop prod stack (and remove volumes)"
 	@echo "  make prod-logs        # follow logs (prod)"
+	@echo "  make prod-logs-django # follow Django logs (prod)"
+	@echo "  make prod-logs-traefik# follow Traefik logs (prod)"
 	@echo "  make prod-migrate     # run migrate (prod)"
 	@echo "  make prod-shell       # open Django shell in prod"
 	@echo "  make prod-superuser   # create Django superuser (prod)"
@@ -87,6 +89,12 @@ prod-down:
 
 prod-logs:
 	docker compose --env-file .env.prod -f $(PROD_COMPOSE) logs -f --tail=200
+
+prod-logs-django:
+	docker compose --env-file .env.prod -f $(PROD_COMPOSE) logs -f django
+
+prod-logs-traefik:
+	docker compose --env-file .env.prod -f $(PROD_COMPOSE) logs -f traefik
 
 prod-migrate:
 	docker compose --env-file .env.prod -f $(PROD_COMPOSE) exec django python /app/app/manage.py migrate

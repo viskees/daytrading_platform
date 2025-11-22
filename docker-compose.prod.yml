@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.1
+    image: traefik:v3.6
     env_file: .env.prod
     command: --providers.docker --providers.file.directory=/etc/traefik/dynamic
     ports:
@@ -14,7 +14,7 @@ services:
     networks: [web]
     environment:
       - DOCKER_HOST=unix:///var/run/docker.sock
-      - DOCKER_API_VERSION=1.44   # 👈 match the *minimum* from `docker version`
+      - DOCKER_API_VERSION=1.44
     labels:
       - traefik.enable=true
 
@@ -36,16 +36,7 @@ services:
       # Relaxed CSP
       - "traefik.http.middlewares.csp-relaxed.headers.customResponseHeaders.Content-Security-Policy=default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; font-src 'self' data:; connect-src 'self'"
 
-  static-perms:
-    image: alpine:3.20
-    env_file: .env.prod
-    user: "0:0"
-    command: sh -lc "mkdir -p /srv/static && chown -R ${UID:-1000}:${GID:-1000} /srv/static"
-    volumes:
-      - staticfiles:/srv/static
-    networks: [web]
-    restart: "no"
-
+  # NO static-perms anymore – we now bind-mount staticfiles from the host
   django:
     user: "${UID:-1000}:${GID:-1000}"
     build:
@@ -53,8 +44,7 @@ services:
     env_file: .env.prod
     volumes:
       - ./.env.prod:/app/.env.prod:ro
-      - staticfiles:/app/app/staticfiles
-      # ⬇️ bind-mount media from host into container
+      - ./django/app/staticfiles:/app/app/staticfiles
       - ./django/app/media:/app/app/media
     networks: [web, internal]
     expose:
@@ -62,8 +52,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      static-perms:
-        condition: service_completed_successfully
     labels:
       - traefik.enable=true
       - traefik.docker.network=daytrading_platform_web
@@ -89,8 +77,7 @@ services:
     image: caddy:2-alpine
     networks: [web]
     volumes:
-      - staticfiles:/srv/static:ro
-      # ⬇️ serve media uploads via Caddy
+      - ./django/app/staticfiles:/srv/static:ro
       - ./django/app/media:/srv/media:ro
       - ./docker/static/prod/Caddyfile:/etc/caddy/Caddyfile:ro
     labels:
@@ -137,4 +124,3 @@ networks:
 volumes:
   pgdata_prod:
   pgadmin_prod:
-  staticfiles:
