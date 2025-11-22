@@ -27,6 +27,7 @@ help:
 	@echo "Prod:"
 	@echo "  make prod-up          # start prod stack (build & up)"
 	@echo "  make prod-down        # stop prod stack (and remove volumes)"
+	@echo "  make prod-frontend-build # build SPA (prod)"
 	@echo "  make prod-logs        # follow logs (prod)"
 	@echo "  make prod-logs-django # follow Django logs (prod)"
 	@echo "  make prod-logs-traefik# follow Traefik logs (prod)"
@@ -86,6 +87,9 @@ prod-up:
 
 prod-down:
 	docker compose --env-file .env.prod -f $(PROD_COMPOSE) down -v
+
+prod-frontend-build:
+	docker compose -f docker-compose.frontend.yml run --rm frontend-build
 
 prod-logs:
 	docker compose --env-file .env.prod -f $(PROD_COMPOSE) logs -f --tail=200
