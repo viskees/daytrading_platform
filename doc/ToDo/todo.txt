@@ -1,4 +1,8 @@
-/admin and /pgadmin dont route correctly
-Dashboard - total equity is filled next day, but on the risk page Effective equity is not
-feature request tab
-dashboard/welcome-page/home-page --> best trade ever + best trade of the day
+
+- fully multi-user
+- account section to manage your personal account, change pw, manage MFA, etc
+- email integration for user registration, pw reset, etc
+- friendly user landing page, with a text section where I can explain the site, manageble via the admin interface
+- the landing page also shows the best trade ever and the best trade of the day
+- feature request page (everybody can add feature request on which others can vote)- visible for all users section and a roadmap section which only myself can edit via the admin interface
+- integrated community chat
