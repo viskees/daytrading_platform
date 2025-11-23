@@ -19,7 +19,8 @@ jobs:
           POSTGRES_DB: daytrading
           POSTGRES_USER: daytrading_app
           POSTGRES_PASSWORD: testpassword
-        # internal network only; job talks to host "postgres"
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U daytrading_app -d daytrading"
           --health-interval 5s
@@ -34,8 +35,9 @@ jobs:
       POSTGRES_DB: daytrading
       POSTGRES_USER: daytrading_app
       POSTGRES_PASSWORD: testpassword
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
+      POSTGRES_HOST: 127.0.0.1         # 👈 use localhost, not "postgres"
+      POSTGRES_PORT: "5432"
+      DJANGO_SETTINGS_MODULE: core.settings
       PYTHONPATH: django/app
 
     steps:
@@ -52,16 +54,39 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Optional: enable these once codebase is formatted
+          # Optional later:
           # pip install ruff black isort
 
       - name: Wait for Postgres
+        working-directory: ./django/app
         run: |
-          for i in {1..20}; do
-            pg_isready -h postgres -p 5432 -U daytrading_app -d daytrading && break
-            echo "Postgres not ready yet..."
-            sleep 2
-          done
+          python - << 'PY'
+          import os, time, psycopg2
+
+          host = os.environ["POSTGRES_HOST"]
+          port = int(os.environ["POSTGRES_PORT"])
+          db   = os.environ["POSTGRES_DB"]
+          user = os.environ["POSTGRES_USER"]
+          pw   = os.environ["POSTGRES_PASSWORD"]
+
+          for i in range(30):
+              try:
+                  conn = psycopg2.connect(
+                      host=host,
+                      port=port,
+                      dbname=db,
+                      user=user,
+                      password=pw,
+                  )
+                  conn.close()
+                  print("Postgres is ready")
+                  break
+              except Exception as e:
+                  print(f"Postgres not ready yet (attempt {i+1}/30): {e}")
+                  time.sleep(2)
+          else:
+              raise SystemExit("Postgres did not become ready in time")
+          PY
 
       - name: Django system checks
         working-directory: ./django/app
