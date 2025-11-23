@@ -900,7 +900,7 @@ export default function App() {
   }, [authed, refreshDashboard]);
 
   /* ---------- Auth Landing ---------- */
-  function Unauthed() {
+ function Unauthed() {
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [err, setErr] = useState<string | null>(null);
@@ -922,14 +922,19 @@ export default function App() {
     const doRegister = async () => {
       setErr(null); setLoading(true);
       try {
-        await apiRegister(email, password);     // creates user
-        await apiLogin(email, password);        // gets JWT + stores it
+        await apiRegister(email, password);
+        await apiLogin(email, password);
         setAuthed(true);
       } catch {
         setErr("Register failed");
       } finally {
         setLoading(false);
       }
+    };
+
+    const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      if (!loading) doLogin();
     };
 
     return (
@@ -943,21 +948,52 @@ export default function App() {
                 <Switch checked={dark} onCheckedChange={setDark} />
               </div>
             </div>
+
             <p className="text-sm text-muted-foreground">
               Please register or log in to access the trading app.
             </p>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
+              {/* FORM STARTS HERE */}
+              <form className="space-y-2" onSubmit={handleSubmit}>
                 <div className="text-sm font-medium">Email</div>
-                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+                <Input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  disabled={loading}
+                />
+
                 <div className="text-sm font-medium">Password</div>
-                <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  disabled={loading}
+                />
+
                 <div className="flex gap-2 mt-2">
-                  <Button onClick={doLogin} disabled={loading}>Log in</Button>
-                  <Button variant="outline" onClick={doRegister} disabled={loading}>Register</Button>
+                  <Button type="submit" disabled={loading}>Log in</Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={doRegister}
+                    disabled={loading}
+                  >
+                    Register
+                  </Button>
                 </div>
-                {err && <div className="text-red-600 text-sm mt-2">{err}</div>}
-              </div>
+
+                {err && (
+                  <div className="text-red-600 text-sm mt-2">{err}</div>
+                )}
+              </form>
+              {/* FORM ENDS HERE */}
+
               <div className="space-y-2">
                 <div className="text-sm font-medium">Two-Factor Authentication</div>
                 <p className="text-xs text-muted-foreground">
@@ -965,8 +1001,13 @@ export default function App() {
                 </p>
               </div>
             </div>
+
             <div className="text-xs text-muted-foreground">
-              Endpoints used now: <code>/api/auth/jwt/token/</code>, <code>/api/auth/register</code>, <code>/api/journal/settings/</code>, <code>/api/journal/trades/</code>
+              Endpoints used now:
+              <code>/api/auth/jwt/token/</code>,
+              <code>/api/auth/register</code>,
+              <code>/api/journal/settings/</code>,
+              <code>/api/journal/trades/</code>
             </div>
           </CardContent>
         </Card>
