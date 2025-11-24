@@ -136,3 +136,4 @@ networks:
 volumes:
   pgdata_prod:
   pgadmin_prod:
+  staticfiles:
