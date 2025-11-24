@@ -84,19 +84,23 @@ services:
     image: caddy:2-alpine
     networks: [web]
     volumes:
-      - ./django/app/staticfiles:/srv/static:ro
+      - staticfiles:/srv/static:ro
       - ./django/app/media:/srv/media:ro
       - ./docker/static/prod/Caddyfile:/etc/caddy/Caddyfile:ro
     labels:
       - traefik.enable=true
       - traefik.docker.network=daytrading_platform_web
-      # serve /static and /media on trade-journal.nl
+
+      # 👇 route BOTH /static and /media to Caddy
       - traefik.http.routers.static.rule=Host(`trade-journal.nl`) && (PathPrefix(`/static`) || PathPrefix(`/media`))
       - traefik.http.routers.static.entrypoints=websecure
       - traefik.http.routers.static.tls.certresolver=letsencrypt
       - traefik.http.routers.static.priority=1500
-      # no more stripPrefix; Caddy expects /static and /media
-      - traefik.http.routers.static.middlewares=secure-headers@docker
+
+      # strip both prefixes before they reach Caddy
+      - traefik.http.routers.static.middlewares=static-strip@docker,secure-headers@docker
+      - traefik.http.middlewares.static-strip.stripprefix.prefixes=/static,/media
+
       - traefik.http.services.static.loadbalancer.server.port=80
 
   postgres:
