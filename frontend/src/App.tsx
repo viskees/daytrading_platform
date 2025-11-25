@@ -900,7 +900,7 @@ export default function App() {
   }, [authed, refreshDashboard]);
 
   /* ---------- Auth Landing ---------- */
- function Unauthed() {
+  function Unauthed() {
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [err, setErr] = useState<string | null>(null);
