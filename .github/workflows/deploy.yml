@@ -10,8 +10,10 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout code
+      - name: Checkout code (this repo, this commit)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # keep full history (useful for tags/rollback)
 
       - name: Sync repo contents to deployment directory
         run: |
@@ -28,13 +30,18 @@ jobs:
             ./ "$DEPLOY_DIR"/
 
       - name: Build frontend (SPA) via Docker
+        working-directory: /opt/daytrading_platform/daytrading_platform
         run: |
           set -e
-          cd /opt/daytrading_platform/daytrading_platform
           docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm frontend-build
 
       - name: Build & restart production stack
+        working-directory: /opt/daytrading_platform/daytrading_platform
         run: |
           set -e
-          cd /opt/daytrading_platform/daytrading_platform
           docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+
+      - name: Record deployed commit
+        working-directory: /opt/daytrading_platform/daytrading_platform
+        run: |
+          echo "${GITHUB_SHA}" > DEPLOYED_COMMIT.txt
