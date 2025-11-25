@@ -19,7 +19,7 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: ${TRAEFIK_EMAIL}
+      email: info@trade-journal.nl
       storage: /acme/acme.json
       httpChallenge:
         entryPoint: web
