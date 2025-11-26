@@ -6,3 +6,5 @@ Next I want to realize a few (big) changes and new features:
 - the landing page also shows the best trade ever and the best trade of the day
 - feature request page (everybody can add feature request on which others can vote)- visible for all users section and a roadmap section which only myself can edit via the admin interface
 - integrated community chat
+
+testdeploy
