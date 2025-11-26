@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Git workflow cheatsheet for daytrading_platform
+# Run commands line-by-line, not as a single script 🙂
+
+##############################################
+# 0. Update local main
+##############################################
+
+# Make sure you are on main
+git checkout main
+
+# Pull latest from GitHub
+git pull origin main
+
+
+##############################################
+# 1. Start a new feature/bug branch
+##############################################
+
+# Create and switch to a new branch from main
+git checkout -b feature/my-feature-name
+# or for bugs:
+# git checkout -b bug/fix-something
+
+
+##############################################
+# 2. Work, commit, push
+##############################################
+
+# See what changed
+git status
+
+# Stage files you changed
+git add path/to/file1 path/to/file2
+# or all changes:
+# git add .
+
+# Commit with a clear message
+git commit -m "feat: describe the change"
+
+# First push: create the remote branch and set upstream
+git push -u origin feature/my-feature-name
+
+
+##############################################
+# 3. Keep branch up-to-date with main
+##############################################
+
+# Fetch latest state from GitHub
+git fetch origin
+
+# Rebase your feature branch onto the latest main
+git rebase origin/main
+
+# After a rebase, push with --force-with-lease to update remote safely
+git push --force-with-lease
+
+
+##############################################
+# 4. Run local CI before creating / finishing a PR
+##############################################
+
+# Make sure your dev DB etc. are available and run local CI
+make ci
+# (backend checks + tests + frontend build, mirroring GitHub CI)
+
+
+##############################################
+# 5. Open / finalize Pull Request (GitHub UI)
+##############################################
+
+# Go to GitHub:
+# - Open PR from feature/my-feature-name → main
+# - CI should run and be green
+# - Review, then click "Merge" in GitHub when ready
+
+# After the PR is merged, sync local main:
+git checkout main
+git pull origin main
+
+
+##############################################
+# 6. Tag a successful deployment
+##############################################
+
+# After a successful deploy from main (via GitHub Actions),
+# create a tag on main as a restore point.
+
+git checkout main
+git pull origin main
+
+# Create a tag (adjust date as needed)
+git tag deploy-2025-11-26
+
+# Push the tag to GitHub
+git push origin deploy-2025-11-26
+
+
+##############################################
+# 7. Cleanup old branches after merge
+##############################################
+
+# List branches that are fully merged into main
+git branch --merged main
+
+# Delete a merged local branch (safe)
+git branch -d feature/my-feature-name
+
+# Prune remote-tracking branches that were deleted on GitHub
+git fetch --prune origin
+
+# List all local and remote branches, just to check
+git branch -a
+
+
+##############################################
+# 8. Start the next feature from a clean main
+##############################################
+
+git checkout main
+git pull origin main
+
+git checkout -b feature/next-roadmap-item
+
+
+##############################################
+# 9. Rollback on the VPS using a deploy tag
+##############################################
+# (Run these on the VPS as user 'deploy')
+
+# Go to the deployment directory
+cd /opt/daytrading_platform/daytrading_platform
+
+# Make sure tags are up-to-date
+git fetch origin --tags
+
+# Check available deploy tags
+git tag | sort
+
+# Check out the known-good deploy tag in a detached state
+git checkout deploy-2025-11-26
+
+# Rebuild and restart the prod stack with that version
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+
+# The VPS now runs the code from deploy-2025-11-26,
+# while GitHub 'main' can continue to move forward.
+
+
+##############################################
+# 10. (Rare) Hard rollback of main itself
+##############################################
+# Only if you truly want main on GitHub to go back to an older deploy.
+# This rewrites history – use with care.
+
+# On your Mac:
+git checkout main
+git pull origin main
+
+# Reset main to a deploy tag
+git reset --hard deploy-2025-11-26
+
+# Force-push the reset main to GitHub
+git push --force origin main
+
+# GitHub Actions will redeploy that old version.
