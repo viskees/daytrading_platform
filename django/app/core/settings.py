@@ -173,7 +173,12 @@ REST_FRAMEWORK = {
 # --------------------------------------------------------------------------------------
 # CORS / Proxy / CSRF (needed for Traefik TLS)
 # --------------------------------------------------------------------------------------
-CORS_ALLOW_ALL_ORIGINS = True  # tighten in prod
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    "https://trade-journal.nl",
+    "https://admin.trade-journal.nl",
+    "https://pgadmin.trade-journal.nl",
+]
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
 
