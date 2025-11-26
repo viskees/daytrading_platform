@@ -1,4 +1,11 @@
 services:
+  frontend-build:
+    image: node:20
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /workspace/frontend
+    command: sh -lc "npm ci || npm install; npm run build"
+    volumes:
+      - ./:/workspace
   traefik:
     image: traefik:v3.6
     env_file: .env.prod
