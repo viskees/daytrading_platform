@@ -27,6 +27,7 @@ jobs:
             --exclude '.github' \
             --exclude '.env.dev' \
             --exclude '.env.prod' \
+            --exclude 'docker/traefik/acme/' \
             ./ "$DEPLOY_DIR"/
 
       - name: Build frontend (SPA) via Docker
