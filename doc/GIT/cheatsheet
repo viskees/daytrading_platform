@@ -2,6 +2,7 @@
 # Git workflow cheatsheet for daytrading_platform
 # Run commands line-by-line, not as a single script 🙂
 
+
 ##############################################
 # 0. Update local main
 ##############################################
@@ -80,7 +81,7 @@ git pull origin main
 
 
 ##############################################
-# 6. Tag a successful deployment
+# 6. Tag a successful deployment (from main)
 ##############################################
 
 # After a successful deploy from main (via GitHub Actions),
@@ -89,11 +90,11 @@ git pull origin main
 git checkout main
 git pull origin main
 
-# Create a tag (adjust date as needed)
-git tag deploy-2025-11-26
+# Create a tag (adjust name/date as needed, e.g. deploy-2025-11-27)
+git tag deploy-2025-11-27
 
 # Push the tag to GitHub
-git push origin deploy-2025-11-26
+git push origin deploy-2025-11-27
 
 
 ##############################################
@@ -124,43 +125,52 @@ git checkout -b feature/next-roadmap-item
 
 
 ##############################################
-# 9. Rollback on the VPS using a deploy tag
+# 9. Rollback using a deploy tag (protected main)
 ##############################################
-# (Run these on the VPS as user 'deploy')
+# Goal: main on GitHub should point back to a known-good deploy tag.
+# This fits your protected-main setup and keeps the CI/CD deploy flow intact.
 
-# Go to the deployment directory
-cd /opt/daytrading_platform/daytrading_platform
-
-# Make sure tags are up-to-date
-git fetch origin --tags
-
-# Check available deploy tags
-git tag | sort
-
-# Check out the known-good deploy tag in a detached state
-git checkout deploy-2025-11-26
-
-# Rebuild and restart the prod stack with that version
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
-
-# The VPS now runs the code from deploy-2025-11-26,
-# while GitHub 'main' can continue to move forward.
-
-
-##############################################
-# 10. (Rare) Hard rollback of main itself
-##############################################
-# Only if you truly want main on GitHub to go back to an older deploy.
-# This rewrites history – use with care.
-
-# On your Mac:
+# 9.1 On your Mac: create a rollback branch *from the tag*
 git checkout main
 git pull origin main
 
-# Reset main to a deploy tag
-git reset --hard deploy-2025-11-26
+# Create rollback branch starting from the known-good tag
+git checkout -b rollback/to-deploy-2025-11-27 deploy-2025-11-27
 
-# Force-push the reset main to GitHub
-git push --force origin main
+# Push the rollback branch to GitHub
+git push -u origin rollback/to-deploy-2025-11-27
 
-# GitHub Actions will redeploy that old version.
+# 9.2 On GitHub (web UI):
+# - Open a Pull Request: base = main, compare = rollback/to-deploy-2025-11-27
+# - CI ("CI" workflow) must be green
+# - Merge the PR into main
+
+# 9.3 Result after merge:
+# - A push to main happens
+# - Your "Deploy Production" workflow is triggered
+# - The self-hosted runner rsyncs main → /opt/daytrading_platform/daytrading_platform
+# - Docker images/containers are rebuilt and restarted
+# => Production is now rolled back to the code of deploy-2025-11-27
+
+# No git commands need to run on the VPS itself; the runner
+# already deploys the current main to the VPS.
+
+
+##############################################
+# 10. (Optional / Rare) True history rewind
+##############################################
+# NOTE: With protected main, this is normally NOT used.
+# It would require temporarily relaxing protection on main.
+# Keep this as documentation only.
+
+# If one day you *really* want to hard-reset main on GitHub:
+#  - Temporarily allow force-pushes on main in GitHub settings
+#  - Then, on your Mac:
+
+# git checkout main
+# git pull origin main
+# git reset --hard deploy-2025-11-27
+# git push --force origin main
+
+# After that, re-enable branch protection.
+# Your normal rollback flow should remain section 9 (rollback branch + PR).
