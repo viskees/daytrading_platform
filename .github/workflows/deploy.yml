@@ -28,6 +28,7 @@ jobs:
             --exclude '.env.dev' \
             --exclude '.env.prod' \
             --exclude 'docker/traefik/acme/' \
+            --exclude 'django/app/media/' \
             ./ "$DEPLOY_DIR"/
 
       - name: Build frontend (SPA) via Docker
