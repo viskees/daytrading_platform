@@ -1,31 +1,43 @@
 #!/usr/bin/env bash
 # Git workflow cheatsheet for daytrading_platform
 # Run commands line-by-line, not as a single script 🙂
+#
+# Concept:
+# - main  = always deployable, what runs on the VPS
+# - dev   = long-living integration branch where you do daily work
+# - Deploys happen from main only (via GitHub Actions)
+# - Tags mark successful deploys
 
 
 ##############################################
-# 0. Update local main
+# 0. One-time setup: create dev branch
 ##############################################
 
-# Make sure you are on main
+# Start on main and make sure it's up-to-date
 git checkout main
-
-# Pull latest from GitHub
 git pull origin main
 
-
-##############################################
-# 1. Start a new feature/bug branch
-##############################################
-
-# Create and switch to a new branch from main
-git checkout -b feature/my-feature-name
-# or for bugs:
-# git checkout -b bug/fix-something
+# Create dev from main (only once)
+git checkout -b dev
+git push -u origin dev
 
 
 ##############################################
-# 2. Work, commit, push
+# 1. Start your day: sync main & dev
+##############################################
+
+# Make sure main is up to date
+git checkout main
+git pull origin main
+
+# Go to dev and merge latest main into dev
+git checkout dev
+git fetch origin
+git merge origin/main      # or: git rebase origin/main
+
+
+##############################################
+# 2. Work on dev: code, commit, push
 ##############################################
 
 # See what changed
@@ -38,27 +50,32 @@ git add path/to/file1 path/to/file2
 
 # Commit with a clear message
 git commit -m "feat: describe the change"
+# examples:
+# git commit -m "fix: restore screenshot URLs after deploy"
+# git commit -m "feat: add trade journal filters"
 
-# First push: create the remote branch and set upstream
-git push -u origin feature/my-feature-name
+# Push dev to GitHub
+git push origin dev
 
 
 ##############################################
-# 3. Keep branch up-to-date with main
+# 3. Keep dev clean during longer work
 ##############################################
 
-# Fetch latest state from GitHub
+# If main has moved while you're still working on dev:
+git checkout main
+git pull origin main
+
+git checkout dev
 git fetch origin
+git merge origin/main      # or: git rebase origin/main
 
-# Rebase your feature branch onto the latest main
-git rebase origin/main
-
-# After a rebase, push with --force-with-lease to update remote safely
-git push --force-with-lease
+# Then push updated dev
+git push origin dev
 
 
 ##############################################
-# 4. Run local CI before creating / finishing a PR
+# 4. Run local CI before releasing dev → main
 ##############################################
 
 # Make sure your dev DB etc. are available and run local CI
@@ -67,17 +84,32 @@ make ci
 
 
 ##############################################
-# 5. Open / finalize Pull Request (GitHub UI)
+# 5. Prepare and merge PR: dev → main
 ##############################################
 
-# Go to GitHub:
-# - Open PR from feature/my-feature-name → main
-# - CI should run and be green
-# - Review, then click "Merge" in GitHub when ready
-
-# After the PR is merged, sync local main:
+# Make sure dev contains latest main and your work
 git checkout main
 git pull origin main
+
+git checkout dev
+git fetch origin
+git merge origin/main      # or rebase if you prefer
+
+git push origin dev
+
+# Then go to GitHub:
+# - Open PR: base = main, compare = dev
+# - CI should run and be green
+# - Review the diff and click "Merge" when ready
+
+# After PR is merged, sync local main & dev:
+
+git checkout main
+git pull origin main       # main now contains your changes
+
+git checkout dev
+git merge origin/main      # keep dev aligned with main
+git push origin dev
 
 
 ##############################################
@@ -98,39 +130,28 @@ git push origin deploy-2025-11-27
 
 
 ##############################################
-# 7. Cleanup old branches after merge
+# 7. Start the next development cycle
 ##############################################
 
-# List branches that are fully merged into main
-git branch --merged main
-
-# Delete a merged local branch (safe)
-git branch -d feature/my-feature-name
-
-# Prune remote-tracking branches that were deleted on GitHub
-git fetch --prune origin
-
-# List all local and remote branches, just to check
-git branch -a
-
-
-##############################################
-# 8. Start the next feature from a clean main
-##############################################
+# Always start from synced main & dev
 
 git checkout main
 git pull origin main
 
-git checkout -b feature/next-roadmap-item
+git checkout dev
+git merge origin/main      # or rebase
+git push origin dev
+
+# Now continue working on dev as in sections 2–4
 
 
 ##############################################
-# 9. Rollback using a deploy tag (protected main)
+# 8. Rollback using a deploy tag (protected main)
 ##############################################
 # Goal: main on GitHub should point back to a known-good deploy tag.
 # This fits your protected-main setup and keeps the CI/CD deploy flow intact.
 
-# 9.1 On your Mac: create a rollback branch *from the tag*
+# 8.1 On your Mac: create a rollback branch *from the tag*
 git checkout main
 git pull origin main
 
@@ -140,12 +161,12 @@ git checkout -b rollback/to-deploy-2025-11-27 deploy-2025-11-27
 # Push the rollback branch to GitHub
 git push -u origin rollback/to-deploy-2025-11-27
 
-# 9.2 On GitHub (web UI):
+# 8.2 On GitHub (web UI):
 # - Open a Pull Request: base = main, compare = rollback/to-deploy-2025-11-27
 # - CI ("CI" workflow) must be green
 # - Merge the PR into main
 
-# 9.3 Result after merge:
+# 8.3 Result after merge:
 # - A push to main happens
 # - Your "Deploy Production" workflow is triggered
 # - The self-hosted runner rsyncs main → /opt/daytrading_platform/daytrading_platform
@@ -157,7 +178,7 @@ git push -u origin rollback/to-deploy-2025-11-27
 
 
 ##############################################
-# 10. (Optional / Rare) True history rewind
+# 9. (Optional / Rare) True history rewind
 ##############################################
 # NOTE: With protected main, this is normally NOT used.
 # It would require temporarily relaxing protection on main.
@@ -173,4 +194,4 @@ git push -u origin rollback/to-deploy-2025-11-27
 # git push --force origin main
 
 # After that, re-enable branch protection.
-# Your normal rollback flow should remain section 9 (rollback branch + PR).
+# Your normal rollback flow should remain section 8 (rollback branch + PR).
