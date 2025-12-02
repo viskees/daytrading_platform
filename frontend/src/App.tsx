@@ -98,6 +98,7 @@ type DaySummary = {
    Helpers + Tests
    ========================= */
 const THEME_KEY = "theme"; // 'dark' | 'light'
+const LAST_EQUITY_KEY = "equity_last_known";
 
 export function calcUsedPctOfBudget(usedDailyRiskPct: number, maxDailyLossPct: number): number {
   if (!isFinite(usedDailyRiskPct) || !isFinite(maxDailyLossPct) || maxDailyLossPct <= 0) return 0;

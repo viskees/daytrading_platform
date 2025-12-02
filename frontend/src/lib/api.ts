@@ -101,8 +101,8 @@ function setToken(tok: TokenPair | null) {
   else localStorage.removeItem("jwt");
 }
 export function hasToken() {
-  // Prefer in-memory access; fall back to legacy localStorage bridge
-  return !!getAccessToken() || !!localStorage.getItem("jwt");
+  // in-memory access only
+  return !!getAccessToken();
 }
 
 /* ------------------------- CSRF helper -------------------------------- */
@@ -184,7 +184,7 @@ export async function login(email: string, password: string) {
   // Backend sets refresh as HttpOnly cookie; body returns { access }
   const res = await fetch(`${API_BASE}/auth/jwt/token/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") || "" },
     body: JSON.stringify({ email, password }),
     credentials: "include",
   });
@@ -281,21 +281,23 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     .map((t) => (t && typeof t === "object" ? t.name : t))
     .filter(Boolean);
 
-  // ---- Fallbacks for computed fields (handles older API responses) ----
   const qtyNum = Number(x.quantity || 0);
   const entryNum = Number(x.entry_price);
-  const exitNum  = x.exit_price != null ? Number(x.exit_price) : null;
-  const stopNum  = x.stop_price != null ? Number(x.stop_price) : null;
+  const exitNum = x.exit_price != null ? Number(x.exit_price) : null;
+  const stopNum = x.stop_price != null ? Number(x.stop_price) : null;
 
-  // realized P/L fallback if server didn't send realized_pnl
   let realizedPnlVal: number | undefined =
     typeof x.realized_pnl === "number" ? x.realized_pnl : undefined;
-  if (realizedPnlVal === undefined && exitNum !== null && Number.isFinite(entryNum) && Number.isFinite(qtyNum)) {
+  if (
+    realizedPnlVal === undefined &&
+    exitNum !== null &&
+    Number.isFinite(entryNum) &&
+    Number.isFinite(qtyNum)
+  ) {
     const move = exitNum - entryNum;
     realizedPnlVal = (x.side === "SHORT" ? -move : move) * qtyNum;
   }
 
-  // R multiple fallback if server didn't send r_multiple
   let rMultipleVal: number | null =
     typeof x.r_multiple === "number" ? x.r_multiple : null;
   if (rMultipleVal == null && exitNum !== null && stopNum !== null && Number.isFinite(entryNum)) {
@@ -305,7 +307,6 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
       rMultipleVal = (x.side === "SHORT" ? -move : move) / rps;
     }
   }
-
 
   return {
     id: x.id,
@@ -331,11 +332,14 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     riskR: undefined,
   };
 }
+
 async function normalizeTradeAsync(x: ApiTrade): Promise<NormalizedTrade> {
   const base = normalizeTrade(x);
   if ((!base.strategyTags || base.strategyTags.length === 0) && Array.isArray(x?.strategy_tag_ids)) {
     const dict = await getTagDict();
-    const names = x.strategy_tag_ids.map((id: number) => dict.get(id)).filter(Boolean) as string[];
+    const names = x.strategy_tag_ids
+      .map((id: number) => dict.get(id))
+      .filter(Boolean) as string[];
     return { ...base, strategyTags: Array.from(new Set(names)) };
   }
   return base;
@@ -353,12 +357,14 @@ export async function fetchClosedTrades(params?: {
   from?: string;
   to?: string;
   page?: number;
-  ts?: number; // optional cache-bust stamp
+  ts?: number;
 }) {
   const build = (ordering: "-exit_time" | "-entry_time") => {
     const q: string[] = ["status=CLOSED", `ordering=${ordering}`];
-    if (params?.from) q.push(`journal_day__date__gte=${encodeURIComponent(params.from)}`);
-    if (params?.to) q.push(`journal_day__date__lte=${encodeURIComponent(params.to)}`);
+    if (params?.from)
+      q.push(`journal_day__date__gte=${encodeURIComponent(params.from)}`);
+    if (params?.to)
+      q.push(`journal_day__date__lte=${encodeURIComponent(params.to)}`);
     if (params?.page) q.push(`page=${params.page}`);
     if (params?.ts) q.push(`_=${params.ts}`);
     return `/journal/trades/?${q.join("&")}`;
@@ -374,7 +380,6 @@ export async function fetchClosedTrades(params?: {
       count: data.count ?? list.length,
     };
   } catch {
-    // fallback for backends without exit_time
     const res = await apiFetch(build("-entry_time"));
     const data = await res.json();
     const list = Array.isArray(data) ? data : data.results ?? [];
@@ -398,7 +403,6 @@ async function getOrCreateTodayDayId(): Promise<number> {
   if (inflightDayPromise) return inflightDayPromise;
   inflightDayPromise = (async () => {
     const d = todayISO();
-    // Single POST: backend returns 201 (created) or 200 (existing)
     const r = await apiFetch(`/journal/days/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -423,7 +427,6 @@ export async function createTrade(payload: {
   size?: number;
   notes?: string;
   strategyTags?: string[];
-  // emotions on open
   entryEmotion?: "NEUTRAL" | "BIASED" | null;
   entryEmotionNote?: string;
 }): Promise<NormalizedTrade> {
@@ -442,7 +445,6 @@ export async function createTrade(payload: {
       target_price: payload.target ?? null,
       notes: payload.notes ?? "",
       ...(payload.strategyTags !== undefined ? { strategy_tag_ids } : {}),
-      // emotion fields
       entry_emotion: payload.entryEmotion ?? null,
       entry_emotion_note: payload.entryEmotionNote ?? "",
     }),
@@ -462,7 +464,6 @@ export async function updateTrade(
     size?: number;
     notes?: string;
     strategyTags?: string[];
-    // allow editing emotions if needed
     entryEmotion?: "NEUTRAL" | "BIASED" | null;
     entryEmotionNote?: string | null;
     exitEmotion?: "NEUTRAL" | "BIASED" | null;
@@ -484,9 +485,13 @@ export async function updateTrade(
       ...(payload.notes !== undefined ? { notes: payload.notes } : {}),
       ...(hasStrategy ? { strategy_tag_ids } : {}),
       ...(payload.entryEmotion !== undefined ? { entry_emotion: payload.entryEmotion } : {}),
-      ...(payload.entryEmotionNote !== undefined ? { entry_emotion_note: payload.entryEmotionNote } : {}),
+      ...(payload.entryEmotionNote !== undefined
+        ? { entry_emotion_note: payload.entryEmotionNote }
+        : {}),
       ...(payload.exitEmotion !== undefined ? { exit_emotion: payload.exitEmotion } : {}),
-      ...(payload.exitEmotionNote !== undefined ? { exit_emotion_note: payload.exitEmotionNote } : {}),
+      ...(payload.exitEmotionNote !== undefined
+        ? { exit_emotion_note: payload.exitEmotionNote }
+        : {}),
     }),
   });
   const json: ApiTrade = await res.json();
@@ -496,13 +501,11 @@ export async function updateTrade(
 export async function closeTrade(
   id: number | string,
   payload: {
-    exitPrice: number; // required (guard below)
+    exitPrice: number;
     notes?: string;
     strategyTags?: string[];
-    // emotions on close
     exitEmotion?: "NEUTRAL" | "BIASED" | null;
     exitEmotionNote?: string;
-    // optionally allow client to set explicit exit_time
     exitTime?: string | null;
   }
 ): Promise<NormalizedTrade> {
@@ -523,17 +526,13 @@ export async function closeTrade(
       exit_price: payload.exitPrice,
       notes: payload.notes ?? "",
       ...(hasStrategy ? { strategy_tag_ids: strategy_tag_ids ?? [] } : {}),
-      // emotions
       exit_emotion: payload.exitEmotion ?? null,
       exit_emotion_note: payload.exitEmotionNote ?? "",
-      // Ensure exit_time is stamped: use caller's value when provided, otherwise "now".
-      // (If the backend also stamps/validates, it will simply overwrite or accept.)
       exit_time: payload.exitTime ?? new Date().toISOString(),
     }),
   });
   const json: ApiTrade = await res.json();
 
-  // Emit live event so Calendar / Dashboard can refresh immediately
   try {
     emitTradeClosed({
       tradeId: json?.id,
@@ -545,7 +544,11 @@ export async function closeTrade(
 }
 
 /* -------------------------- Attachments ------------------------------- */
-export async function createAttachment(tradeId: number | string, file: File, caption = "") {
+export async function createAttachment(
+  tradeId: number | string,
+  file: File,
+  caption = ""
+) {
   const fd = new FormData();
   fd.append("trade", String(tradeId));
   fd.append("image", file, file.name);
@@ -554,37 +557,34 @@ export async function createAttachment(tradeId: number | string, file: File, cap
   return res.json();
 }
 
-export async function listAttachments(tradeId: number | string): Promise<
-  Array<{ id: number; image: string; caption?: string; created_at?: string }>
-> {
-  // Keep the same prefix style as the rest of the journal API.
+export async function listAttachments(
+  tradeId: number | string
+): Promise<Array<{ id: number; image: string; caption?: string; created_at?: string }>> {
   const res = await apiFetch(`/journal/attachments/?trade=${tradeId}`);
   if (!res.ok) return [];
   const raw = await res.json();
   const rows = Array.isArray(raw) ? raw : raw?.results ?? [];
 
-  // Be tolerant to different backend field names:
-  // image | image_url | file | url  (and caption/note variants)
   const norm = rows
     .map((r: any) => {
-      const img =
-        r.image ??
-        r.image_url ??
-        r.file ??
-        r.url ??
-        "";
+      const img = r.image ?? r.image_url ?? r.file ?? r.url ?? "";
       return img
-        ? { id: r.id, image: img, caption: r.caption ?? r.note ?? "", created_at: r.created_at ?? r.createdAt ?? undefined }
+        ? {
+            id: r.id,
+            image: img,
+            caption: r.caption ?? r.note ?? "",
+            created_at: r.created_at ?? r.createdAt ?? undefined,
+          }
         : null;
     })
     .filter(Boolean) as Array<{ id: number; image: string; caption?: string; created_at?: string }>;
   return norm;
-};
+}
 
 /* ----------------------- Account / Session KPIs ---------------------- */
 export async function fetchSessionStatusToday() {
   const res = await apiFetch(`/journal/trades/status/today/`);
-  return res.json(); // { trades, win_rate, avg_r, best_r, worst_r, daily_loss_pct, used_daily_risk_pct, ... }
+  return res.json();
 }
 
 export async function fetchAccountSummary() {
@@ -636,13 +636,10 @@ export async function listAdjustments(journalDayId?: number | null) {
   );
   const j = await res.json();
 
-  // Normalize pagination (array or {results: []})
   const rows = Array.isArray(j) ? j : j?.results ?? [];
 
-  // Normalize field names that the table expects
   return rows.map((r: any) => ({
     id: r.id,
-    // prefer at_time (event time); fall back to created_at if needed
     at_time: r.at_time ?? r.created_at ?? null,
     amount: Number(r.amount ?? 0),
     reason: String(r.reason ?? ""),

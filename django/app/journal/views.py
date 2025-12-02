@@ -1,17 +1,16 @@
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, PermissionDenied
 from rest_framework import viewsets, mixins, status, permissions, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.utils import timezone
-from datetime import datetime
-from django.utils.timezone import now
-from .models import JournalDay, Trade, StrategyTag, Attachment, UserSettings, AccountAdjustment
-from .serializers import UserSettingsSerializer, JournalDaySerializer, TradeSerializer, StrategyTagSerializer, AttachmentSerializer, AccountAdjustmentSerializer
-from django_filters.rest_framework import DjangoFilterBackend
-from django.db import IntegrityError
-from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.serializers import ValidationError
+from django_filters.rest_framework import DjangoFilterBackend
+
+from django.utils import timezone
+from django.utils.timezone import now
+from datetime import datetime
+from decimal import Decimal
+
 from django.db.models import (
     Q,
     F,
@@ -26,8 +25,24 @@ from django.db.models import (
     FloatField,
     ExpressionWrapper,
 )
-from decimal import Decimal
 from django.db.models.functions import TruncDate
+
+from .models import (
+    JournalDay,
+    Trade,
+    StrategyTag,
+    Attachment,
+    UserSettings,
+    AccountAdjustment,
+)
+from .serializers import (
+    UserSettingsSerializer,
+    JournalDaySerializer,
+    TradeSerializer,
+    StrategyTagSerializer,
+    AttachmentSerializer,
+    AccountAdjustmentSerializer,
+)
 
 
 class Conflict(APIException):
@@ -35,12 +50,14 @@ class Conflict(APIException):
     default_detail = "Conflict"
     default_code = "conflict"
 
+
 # --- Object-level permission to ensure only the owner can access a Trade object ---
 class IsOwnerOfTrade(permissions.BasePermission):
     """
     Allows access only to the owner of the Trade.
     Works with DRF's object-permission flow (retrieve/update/destroy).
     """
+
     def has_object_permission(self, request, view, obj):
         try:
             return obj.user_id == request.user.id
@@ -49,6 +66,11 @@ class IsOwnerOfTrade(permissions.BasePermission):
 
 
 class UserSettingsViewSet(viewsets.ViewSet):
+    """
+    Per-user risk & UI settings.
+    Always scoped to request.user via get_or_create(user=request.user).
+    """
+
     permission_classes = [permissions.IsAuthenticated]
 
     def list(self, request):
@@ -70,7 +92,7 @@ class UserSettingsViewSet(viewsets.ViewSet):
         ser.save()
         return Response(ser.data)
 
-     # PATCH /api/journal/settings/{id}/
+    # PATCH /api/journal/settings/{id}/
     def partial_update(self, request, pk=None):
         obj, _ = UserSettings.objects.get_or_create(user=request.user)
         ser = UserSettingsSerializer(instance=obj, data=request.data, partial=True)
@@ -78,7 +100,14 @@ class UserSettingsViewSet(viewsets.ViewSet):
         ser.save()
         return Response(ser.data)
 
+
 class JournalDayViewSet(viewsets.ModelViewSet):
+    """
+    JournalDay is strictly per-user:
+      - Queries are filtered by user=request.user
+      - Creation forces user=request.user
+    """
+
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = JournalDaySerializer
 
@@ -106,15 +135,20 @@ class JournalDayViewSet(viewsets.ModelViewSet):
         """
         Allow updating day_start_equity only for TODAY and only by owner.
         """
-        instance = self.get_object()
+        instance = self.get_object()  # already scoped to request.user via get_queryset
         if instance.user_id != request.user.id:
             raise PermissionDenied("Forbidden")
+
         # Lock past days to keep audit story clean
         if instance.date != now().date():
             return Response(
-                {"code": "LOCKED_DAY", "detail": "You can edit day_start_equity only for today."},
+                {
+                    "code": "LOCKED_DAY",
+                    "detail": "You can edit day_start_equity only for today.",
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
+
         data = {}
         if "day_start_equity" in request.data:
             try:
@@ -124,13 +158,17 @@ class JournalDayViewSet(viewsets.ModelViewSet):
             if val < 0:
                 raise ValidationError({"day_start_equity": "Must be >= 0."})
             data["day_start_equity"] = val
+
         ser = self.get_serializer(instance, data=data, partial=True)
         ser.is_valid(raise_exception=True)
         ser.save()
         return Response(self.get_serializer(instance).data)
 
     def create(self, request, *args, **kwargs):
-        from decimal import Decimal
+        """
+        Idempotent creation: for a given date, return/create the JournalDay
+        for the current user, and auto-carry forward equity from the previous day.
+        """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         date = serializer.validated_data["date"]
@@ -140,11 +178,9 @@ class JournalDayViewSet(viewsets.ModelViewSet):
 
         # If it's a freshly created day, auto-carry forward the last day’s equity
         if created:
-            from django.utils.timezone import now
             # previous day strictly before the requested date
             prev = (
-                JournalDay.objects
-                .filter(user=request.user, date__lt=date)
+                JournalDay.objects.filter(user=request.user, date__lt=date)
                 .order_by("-date")
                 .first()
             )
@@ -165,10 +201,19 @@ class JournalDayViewSet(viewsets.ModelViewSet):
         code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(data, status=code)
 
+
 class TradeViewSet(viewsets.ModelViewSet):
+    """
+    Trades are strictly per-user:
+      - get_queryset() filters by user
+      - create/update/close enforce ownership on the associated JournalDay
+      - object-level permission double-checks on retrieve/update/destroy
+    """
+
     permission_classes = [permissions.IsAuthenticated, IsOwnerOfTrade]
     serializer_class = TradeSerializer
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
+
     # richer filters so the Journal tab can do date ranges, ticker search, etc.
     filterset_fields = {
         "status": ["exact"],
@@ -178,19 +223,15 @@ class TradeViewSet(viewsets.ModelViewSet):
         "side": ["exact"],
     }
     ordering_fields = ["entry_time", "exit_time", "ticker", "id"]
-    # default when no ?ordering=… is provided
-    ordering = ["-entry_time"]
+    ordering = ["-entry_time"]  # default when no ?ordering=… is provided
     search_fields = ["ticker", "notes"]
 
     def get_queryset(self):
-        qs = (
-            Trade.objects.filter(user=self.request.user)
-            .prefetch_related("strategy_tags")
-        )
+        qs = Trade.objects.filter(user=self.request.user).prefetch_related("strategy_tags")
         params = self.request.query_params
 
         # existing filters
-        day_id   = params.get("journal_day")
+        day_id = params.get("journal_day")
         status_f = params.get("status")
         if day_id:
             qs = qs.filter(journal_day_id=day_id)
@@ -205,7 +246,7 @@ class TradeViewSet(viewsets.ModelViewSet):
 
         # Support ?date_from=&date_to= (mapped to gte/lte on journal_day__date)
         date_from = params.get("date_from")
-        date_to   = params.get("date_to")
+        date_to = params.get("date_to")
         if date_from:
             qs = qs.filter(journal_day__date__gte=date_from)
         if date_to:
@@ -217,19 +258,21 @@ class TradeViewSet(viewsets.ModelViewSet):
         day = serializer.validated_data.get("journal_day")
         if day.user_id != self.request.user.id:
             raise PermissionDenied("Forbidden")
-         # --- Risk checks (entry only; never block closes) ---
+
+        # --- Risk checks (entry only; never block closes) ---
         # Always have a policy row; prevents hard-failing with "not configured"
         policy, _ = UserSettings.objects.get_or_create(user=self.request.user)
 
         qty = serializer.validated_data.get("quantity") or 0
         entry = serializer.validated_data.get("entry_price")
-        stop  = serializer.validated_data.get("stop_price")
+        stop = serializer.validated_data.get("stop_price")
 
         # Per-trade risk % (only if inputs are present and equity > 0)
         try:
             effective_equity = float(day.effective_equity or 0.0)
-            if effective_equity > 0 and (
-                entry is not None
+            if (
+                effective_equity > 0
+                and entry is not None
                 and stop is not None
                 and qty not in (None, 0)
                 and policy.max_risk_per_trade_pct is not None
@@ -241,7 +284,10 @@ class TradeViewSet(viewsets.ModelViewSet):
                     if float(per_trade_risk_pct) > float(policy.max_risk_per_trade_pct):
                         detail = {
                             "code": "RISK_VIOLATION_PER_TRADE",
-                            "detail": f"Per-trade risk {per_trade_risk_pct:.2f}% exceeds max {float(policy.max_risk_per_trade_pct):.2f}%.",
+                            "detail": (
+                                f"Per-trade risk {per_trade_risk_pct:.2f}% exceeds "
+                                f"max {float(policy.max_risk_per_trade_pct):.2f}%."
+                            ),
                             "data": {
                                 "per_trade_risk_pct": round(per_trade_risk_pct, 4),
                                 "max_risk_per_trade_pct": float(policy.max_risk_per_trade_pct),
@@ -267,13 +313,17 @@ class TradeViewSet(viewsets.ModelViewSet):
             if t.side == "SHORT":
                 move = -move
             realized += move * float(t.quantity)
+
         eff_eq_for_loss = float(day.effective_equity or 0.0)
         if eff_eq_for_loss > 0 and policy.max_daily_loss_pct is not None:
             daily_loss_pct = (max(0.0, -float(realized)) / eff_eq_for_loss) * 100.0
             if float(daily_loss_pct) >= float(policy.max_daily_loss_pct):
                 detail = {
                     "code": "RISK_VIOLATION_DAILY_LOSS",
-                    "detail": f"Daily loss {daily_loss_pct:.2f}% reached limit {float(policy.max_daily_loss_pct):.2f}%.",
+                    "detail": (
+                        f"Daily loss {daily_loss_pct:.2f}% reached limit "
+                        f"{float(policy.max_daily_loss_pct):.2f}%."
+                    ),
                     "data": {
                         "daily_loss_pct": round(daily_loss_pct, 4),
                         "max_daily_loss_pct": float(policy.max_daily_loss_pct),
@@ -300,6 +350,7 @@ class TradeViewSet(viewsets.ModelViewSet):
         day = serializer.validated_data.get("journal_day", serializer.instance.journal_day)
         if day.user_id != self.request.user.id:
             raise PermissionDenied("Forbidden")
+
         trade = serializer.save(user=self.request.user)
         # If client sets status CLOSED but didn't send exit_time, set it now
         if trade.status == "CLOSED" and not trade.exit_time:
@@ -311,17 +362,22 @@ class TradeViewSet(viewsets.ModelViewSet):
         Dashboard widget: risk usage + session stats for the current JournalDay.
         Returns: {trades, win_rate, avg_r, best_r, worst_r, daily_loss_pct, used_daily_risk_pct}
         """
-        from django.utils.timezone import now
         today = now().date()
         day = JournalDay.objects.filter(user=request.user, date=today).first()
         if not day:
-            return Response({
-                "trades": 0, "win_rate": 0.0, "avg_r": 0.0,
-                "best_r": 0.0, "worst_r": 0.0,
-                "daily_loss_pct": 0.0, "used_daily_risk_pct": 0.0,
-                "effective_equity": 0.0,
-                "adjustments_total": 0.0,
-            })
+            return Response(
+                {
+                    "trades": 0,
+                    "win_rate": 0.0,
+                    "avg_r": 0.0,
+                    "best_r": 0.0,
+                    "worst_r": 0.0,
+                    "daily_loss_pct": 0.0,
+                    "used_daily_risk_pct": 0.0,
+                    "effective_equity": 0.0,
+                    "adjustments_total": 0.0,
+                }
+            )
 
         trades = day.trades.all()
         closed = trades.filter(status="CLOSED")
@@ -336,29 +392,34 @@ class TradeViewSet(viewsets.ModelViewSet):
                 if t.side == "SHORT":
                     move = -move
                 realized_pnl += move * float(t.quantity)
+
         wins = sum(1 for r in r_list if r > 0)
         total = len(r_list)
         win_rate = (wins / total * 100.0) if total else 0.0
         avg_r = (sum(r_list) / total) if total else 0.0
         best_r = max(r_list) if r_list else 0.0
         worst_r = min(r_list) if r_list else 0.0
+
         daily_loss_pct = 0.0
         used_daily_risk_pct = 0.0
         eff_eq = float(day.effective_equity or 0.0)
         if eff_eq > 0:
             daily_loss_pct = max(0.0, -realized_pnl) / eff_eq * 100.0
             used_daily_risk_pct = daily_loss_pct  # same concept for the bar
-        return Response({
-            "trades": trades.count(),
-            "win_rate": win_rate,
-            "avg_r": avg_r,
-            "best_r": best_r,
-            "worst_r": worst_r,
-            "daily_loss_pct": daily_loss_pct,
-            "used_daily_risk_pct": used_daily_risk_pct,
-            "effective_equity": eff_eq,
-            "adjustments_total": float(day.adjustments_total),
-        })
+
+        return Response(
+            {
+                "trades": trades.count(),
+                "win_rate": win_rate,
+                "avg_r": avg_r,
+                "best_r": best_r,
+                "worst_r": worst_r,
+                "daily_loss_pct": daily_loss_pct,
+                "used_daily_risk_pct": used_daily_risk_pct,
+                "effective_equity": eff_eq,
+                "adjustments_total": float(day.adjustments_total),
+            }
+        )
 
     @action(detail=False, methods=["get"], url_path="account/summary")
     def account_summary(self, request):
@@ -398,48 +459,73 @@ class TradeViewSet(viewsets.ModelViewSet):
 
         equity_today = float(day.effective_equity or 0.0) if day else 0.0
         # naive last-close equity: yesterday's day_start_equity if present
-        prev_day = JournalDay.objects.filter(user=user, date__lt=today).order_by("-date").first()
+        prev_day = (
+            JournalDay.objects.filter(user=user, date__lt=today).order_by("-date").first()
+        )
         equity_last_close = float(prev_day.day_start_equity or 0.0) if prev_day else None
 
-        return Response({
-            "pl_today": round(pl_today, 2),
-            "pl_total": round(pl_total, 2),
-            "equity_today": round(equity_today, 2),
-            "equity_last_close": round(equity_last_close, 2) if equity_last_close is not None else None,
-        })
+        return Response(
+            {
+                "pl_today": round(pl_today, 2),
+                "pl_total": round(pl_total, 2),
+                "equity_today": round(equity_today, 2),
+                "equity_last_close": (
+                    round(equity_last_close, 2) if equity_last_close is not None else None
+                ),
+            }
+        )
 
     @action(detail=True, methods=["post"])
     def close(self, request, pk=None):
+        """
+        Close a trade, enforcing ownership and re-attaching it to the correct JournalDay
+        based on exit_time.
+        """
         trade = self.get_object()
         if trade.user_id != request.user.id:
             raise PermissionDenied("Forbidden")
+
         exit_price = request.data.get("exit_price")
         if exit_price is None:
-            return Response({
-                "code": "VALIDATION_ERROR",
-                "detail": "exit_price is required"
-        }, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {
+                    "code": "VALIDATION_ERROR",
+                    "detail": "exit_price is required",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         trade.exit_price = exit_price
         # Guarantee exit_time + CLOSED status
         if not trade.exit_time:
             trade.exit_time = timezone.now()
         trade.status = "CLOSED"
+
         # Ensure the trade is attached to the JournalDay of the (local) exit date.
-        # (If it was missing or belonged to a different day, fix it now)
         exit_date = trade.exit_time.date()
         if not trade.journal_day or trade.journal_day.date != exit_date:
             jd, _ = JournalDay.objects.get_or_create(user=request.user, date=exit_date)
             trade.journal_day = jd
+
         trade.save(update_fields=["exit_price", "exit_time", "status", "journal_day"])
-        # Use view's serializer (includes context=request for absolute image URLs downstream)
+
         ser = self.get_serializer(trade)
         return Response(ser.data)
 
+
 class StrategyTagViewSet(viewsets.ModelViewSet):
+    """
+    NOTE: This currently exposes all StrategyTag objects.
+    This assumes tags are global/shared across users.
+    If you want per-user tags, we can later add a user FK and filter by request.user.
+    """
+
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = StrategyTagSerializer
+
     def get_queryset(self):
         return StrategyTag.objects.all()
+
 
 class AttachmentViewSet(
     mixins.ListModelMixin,
@@ -448,9 +534,13 @@ class AttachmentViewSet(
     mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
+    """
+    Attachments are scoped to trades owned by the current user.
+    """
+
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AttachmentSerializer
-    parser_classes = [MultiPartParser, FormParser]  # <-- add this line
+    parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
         qs = Attachment.objects.filter(trade__user=self.request.user)
@@ -460,18 +550,23 @@ class AttachmentViewSet(
         return qs
 
     def perform_create(self, serializer):
-        trade = serializer.validated_data.get('trade')
+        trade = serializer.validated_data.get("trade")
         if trade.user_id != self.request.user.id:
-            raise PermissionDenied('Forbidden')
+            raise PermissionDenied("Forbidden")
         serializer.save()
 
-class AccountAdjustmentViewSet(mixins.CreateModelMixin,
-                               mixins.DestroyModelMixin,
-                               mixins.ListModelMixin,
-                               viewsets.GenericViewSet):
+
+class AccountAdjustmentViewSet(
+    mixins.CreateModelMixin,
+    mixins.DestroyModelMixin,
+    mixins.ListModelMixin,
+    viewsets.GenericViewSet,
+):
     """
     Manage deposits / withdrawals / fees / corrections for a given JournalDay.
+    Strictly per-user.
     """
+
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AccountAdjustmentSerializer
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
@@ -485,16 +580,22 @@ class AccountAdjustmentViewSet(mixins.CreateModelMixin,
         jd = serializer.validated_data.get("journal_day")
         if jd.user_id != self.request.user.id:
             raise PermissionDenied("Forbidden")
+
         amt = serializer.validated_data.get("amount")
         try:
             if float(amt) == 0.0:
                 raise ValidationError({"amount": "Amount cannot be zero."})
         except Exception:
             raise ValidationError({"amount": "Invalid amount."})
+
         serializer.save(user=self.request.user)
 
 
 class PnLViewSet(viewsets.ViewSet):
+    """
+    PnL reporting is always computed only over the current user's trades.
+    """
+
     permission_classes = [permissions.IsAuthenticated]
 
     @action(detail=False, methods=["get"], url_path="daily")
@@ -502,8 +603,10 @@ class PnLViewSet(viewsets.ViewSet):
         start = request.query_params.get("start")
         end = request.query_params.get("end")
         if not start or not end:
-            return Response({"detail": "start and end (YYYY-MM-DD) are required."},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "start and end (YYYY-MM-DD) are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             start_date = datetime.strptime(start, "%Y-%m-%d").date()
             end_date = datetime.strptime(end, "%Y-%m-%d").date()
@@ -513,18 +616,20 @@ class PnLViewSet(viewsets.ViewSet):
         # Robust PnL expression computed from prices * quantity.
         # LONG:  (exit - entry) * qty
         # SHORT: (entry - exit) * qty  ==  - (exit - entry) * qty
-        price_move = (F("exit_price") - F("entry_price"))
+        price_move = F("exit_price") - F("entry_price")
         signed_move = Case(
             When(side="SHORT", then=-price_move),
             default=price_move,
             output_field=FloatField(),
         )
-        pnl_expr = ExpressionWrapper(signed_move * F("quantity"), output_field=FloatField())
+        pnl_expr = ExpressionWrapper(
+            signed_move * F("quantity"),
+            output_field=FloatField(),
+        )
 
         # Aggregate per calendar day (by exit_time date). We compute PL and trade count in SQL.
         base = (
-            Trade.objects
-            .filter(
+            Trade.objects.filter(
                 user=request.user,
                 status="CLOSED",
                 journal_day__date__gte=start_date,
@@ -548,7 +653,9 @@ class PnLViewSet(viewsets.ViewSet):
 
             # Pull the day's trades to compute R metrics safely in Python.
             day_trades = Trade.objects.filter(
-                user=request.user, status="CLOSED", journal_day__date=day
+                user=request.user,
+                status="CLOSED",
+                journal_day__date=day,
             )
             r_list = []
             wins = 0
@@ -576,15 +683,17 @@ class PnLViewSet(viewsets.ViewSet):
 
             win_rate = (wins / trades_count * 100.0) if trades_count else 0.0
 
-            out.append({
-                "date": day.isoformat(),
-                "pl": round(pl_val, 2),
-                "trades": trades_count,
-                "win_rate": round(win_rate, 2),
-                "avg_r": round(avg_r, 4),
-                "best_r": round(best_r, 4),
-                "worst_loss_r": round(worst_r, 4),  # typically negative
-                "max_dd_pct": 0.0,  # placeholder; can be computed from equity path
-            })
+            out.append(
+                {
+                    "date": day.isoformat(),
+                    "pl": round(pl_val, 2),
+                    "trades": trades_count,
+                    "win_rate": round(win_rate, 2),
+                    "avg_r": round(avg_r, 4),
+                    "best_r": round(best_r, 4),
+                    "worst_loss_r": round(worst_r, 4),  # typically negative
+                    "max_dd_pct": 0.0,  # placeholder; can be computed from equity path
+                }
+            )
 
         return Response(out)
