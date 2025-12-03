@@ -44,3 +44,25 @@ class RegisterSerializer(serializers.Serializer):
     # Control what the API returns after 201 Created
     def to_representation(self, instance):
         return {"id": instance.pk, "email": instance.email}
+
+class PasswordChangeSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+
+    def validate_old_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Old password is not correct.")
+        return value
+
+    def validate_new_password(self, value):
+        user = self.context["request"].user
+        # reuse Django's password validators
+        validate_password(value, user)
+        return value
+
+    def save(self, **kwargs):
+        user = self.context["request"].user
+        user.set_password(self.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        return user

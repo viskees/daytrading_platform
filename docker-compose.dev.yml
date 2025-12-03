@@ -98,6 +98,16 @@ services:
       - traefik.http.routers.static.tls=true
       - traefik.http.routers.static.priority=1500
       - traefik.http.services.static.loadbalancer.server.port=80
+  
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025"   # Web UI → http://localhost:8025
+      - "1025:1025"   # SMTP
+    networks:
+      - internal      # same internal network as django/postgres
 
 networks:
   web:

@@ -681,3 +681,36 @@ export async function createAdjustment(input: {
 export async function deleteAdjustment(id: number) {
   await authedFetch(`/api/journal/account/adjustments/${id}/`, { method: "DELETE" });
 }
+
+// ----------------------- Account / Me & password ------------------------
+
+export type Me = {
+  id: number;
+  email: string;
+};
+
+/**
+ * Fetch current logged-in user.
+ */
+export async function fetchMe(): Promise<Me> {
+  const res = await apiFetch(`/auth/me/`);
+  return res.json();
+}
+
+/**
+ * Change password for the current user.
+ */
+export async function changePassword(oldPassword: string, newPassword: string) {
+  const res = await apiFetch(`/auth/password/change/`, {
+    method: "POST",
+    body: JSON.stringify({
+      old_password: oldPassword,
+      new_password: newPassword,
+    }),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "Failed to change password");
+    throw new Error(msg || "Failed to change password");
+  }
+  return res.json();
+}

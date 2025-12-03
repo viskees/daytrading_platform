@@ -32,6 +32,8 @@ import {
   type AdjustmentReason,
   setUnauthorizedHandler,
   updateTrade,
+  fetchMe,
+  changePassword,
 } from "@/lib/api";
 import { onTradeClosed, emitTradeClosed } from "@/lib/events";
 import JournalTab from "./components/JournalTab";
@@ -518,7 +520,9 @@ const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "Ran
    App
    ========================= */
 export default function App() {
-  const [page, setPage] = useState<"dashboard" | "stocks" | "risk" | "journal">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "stocks" | "risk" | "journal" | "account">(
+    "dashboard"
+  );
   const [risk, setRisk] = useState<RiskPolicy>(MOCK_RISK);
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
   const [dark, setDark] = useState<boolean>(getInitialDark());
@@ -845,19 +849,36 @@ export default function App() {
       try {
         const settings = await apiFetchUserSettings();
         if (settings) {
-          setDark(!!settings.dark_mode);
-          setRisk(r => ({
+          // 🔹 Do NOT override a user-chosen theme.
+          // Only adopt server theme if there is no explicit local preference yet.
+          let stored: string | null = null;
+          try {
+            stored = localStorage.getItem(THEME_KEY);
+          } catch {
+            stored = null;
+          }
+          if (!stored) {
+            setDark(!!settings.dark_mode);
+          }
+
+          setRisk((r) => ({
             ...r,
-            maxRiskPerTradePct: Number(settings.max_risk_per_trade_pct ?? r.maxRiskPerTradePct),
-            maxDailyLossPct: Number(settings.max_daily_loss_pct ?? r.maxDailyLossPct),
-            maxTradesPerDay: Number(settings.max_trades_per_day ?? r.maxTradesPerDay),
+            maxRiskPerTradePct: Number(
+              settings.max_risk_per_trade_pct ?? r.maxRiskPerTradePct
+            ),
+            maxDailyLossPct: Number(
+              settings.max_daily_loss_pct ?? r.maxDailyLossPct
+            ),
+            maxTradesPerDay: Number(
+              settings.max_trades_per_day ?? r.maxTradesPerDay
+            ),
           }));
         }
-      } catch { }
+      } catch {}
       try {
         const trades = await apiFetchOpenTrades();
         setOpenTrades(Array.isArray(trades) ? (trades as Trade[]) : []);
-      } catch { }
+      } catch {}
       // Initial pull (coalesced & rate-limited)
       void refreshDashboard();
     })();
@@ -996,9 +1017,11 @@ export default function App() {
               {/* FORM ENDS HERE */}
 
               <div className="space-y-2">
-                <div className="text-sm font-medium">Two-Factor Authentication</div>
+                <div className="text-sm font-medium">About this app</div>
                 <p className="text-xs text-muted-foreground">
-                  MFA is pre-setup server-side. We’ll wire the QR + verify endpoints next.
+                  Your trades, risk settings, and screenshots are stored per user account.
+                  You can manage your profile, password, and security options later on the
+                  <span className="font-semibold"> Account</span> tab.
                 </p>
               </div>
             </div>
@@ -1264,6 +1287,128 @@ export default function App() {
     </div>
   );
 
+  const AccountPage = () => {
+    const [me, setMe] = useState<{ id: number; email: string } | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [err, setErr] = useState<string | null>(null);
+
+    const [oldPassword, setOldPassword] = useState("");
+    const [newPassword, setNewPassword] = useState("");
+    const [pwMsg, setPwMsg] = useState<string | null>(null);
+    const [pwErr, setPwErr] = useState<string | null>(null);
+    const [pwSaving, setPwSaving] = useState(false);
+
+    useEffect(() => {
+      let cancelled = false;
+      (async () => {
+        try {
+          setLoading(true);
+          const data = await fetchMe();
+          if (!cancelled) {
+            setMe(data);
+            setErr(null);
+          }
+        } catch (e: any) {
+          if (!cancelled) {
+            setErr("Failed to load account info");
+          }
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, []);
+
+    const onChangePassword = async () => {
+      setPwMsg(null);
+      setPwErr(null);
+      setPwSaving(true);
+      try {
+        await changePassword(oldPassword, newPassword);
+        setPwMsg("Password updated successfully.");
+        setOldPassword("");
+        setNewPassword("");
+      } catch (e: any) {
+        setPwErr(String(e?.message ?? "Failed to change password"));
+      } finally {
+        setPwSaving(false);
+      }
+    };
+
+    return (
+      <Card>
+        <CardContent className="p-4 space-y-6">
+          <h2 className="font-bold text-lg">Account</h2>
+
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading account…</div>
+          ) : err ? (
+            <div className="text-sm text-red-600">{err}</div>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <div className="text-xs text-muted-foreground">Email</div>
+                <div className="text-sm font-medium">{me?.email}</div>
+              </div>
+
+              <div className="border-t pt-4 space-y-3">
+                <h3 className="font-semibold text-sm">Change password</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="text-xs text-muted-foreground">Current password</span>
+                    <Input
+                      type="password"
+                      value={oldPassword}
+                      onChange={(e) => setOldPassword(e.target.value)}
+                      autoComplete="current-password"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-muted-foreground">New password</span>
+                    <Input
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      autoComplete="new-password"
+                    />
+                  </label>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={onChangePassword}
+                  disabled={pwSaving || !oldPassword || !newPassword}
+                >
+                  {pwSaving ? "Saving…" : "Update password"}
+                </Button>
+                {pwMsg && <div className="text-xs text-emerald-600 mt-1">{pwMsg}</div>}
+                {pwErr && <div className="text-xs text-red-600 mt-1">{pwErr}</div>}
+              </div>
+
+              <div className="border-t pt-4 space-y-2">
+                <h3 className="font-semibold text-sm">Two-Factor Authentication (2FA)</h3>
+                <p className="text-xs text-muted-foreground">
+                  2FA is managed via the server&rsquo;s security pages. For now you can configure it
+                  via the Django interface. Later we can embed a full SPA flow.
+                </p>
+                <Button
+                  asChild
+                  size="sm"
+                  variant="outline"
+                >
+                  <a href="/account/login/">
+                    Open server security / 2FA
+                  </a>
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    );
+  };
+
   const RiskSettings = () => {
     // ---- Equity state (scoped to Risk page) ----
     const [loading, setLoading] = useState(true);
@@ -1521,6 +1666,8 @@ export default function App() {
               </CardContent>
             </Card>
         );
+      case "account":
+        return <AccountPage />;
     }
   };
 
@@ -1536,6 +1683,7 @@ export default function App() {
             { key: "stocks", label: "Stocks" },
             { key: "risk", label: "Risk" },
             { key: "journal", label: "Journal" },
+            { key: "account", label: "Account" },
           ].map((tab) => (
             <Button
               key={tab.key}
