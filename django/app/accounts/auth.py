@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth import authenticate, login as django_login
 from django.conf import settings
 from django.utils import timezone
 
@@ -10,11 +11,14 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from rest_framework_simplejwt.token_blacklist.models import (
     BlacklistedToken,
     OutstandingToken,
 )
-from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+
+from rest_framework import status
+
 
 import datetime
 
@@ -65,39 +69,54 @@ class EmailOnlyTokenView(TokenObtainPairView):
 class CookieTokenObtainPairView(EmailOnlyTokenView):
     """
     On success:
+      - Log the user into a Django session (so /account/two_factor/* works)
       - Set refresh token as HttpOnly cookie
       - Return only { "access": "<...>" } in body
     """
-
     def post(self, request, *args, **kwargs):
+        # First let SimpleJWT validate credentials and build tokens
         resp = super().post(request, *args, **kwargs)
         if resp.status_code != status.HTTP_200_OK:
             return resp
 
-        data = resp.data
+        data = resp.data or {}
         access = data.get("access")
         refresh = data.get("refresh")
         if not (access and refresh):
             return resp
 
-        # replace body: only access
-        resp.data = {"access": access}
+        # --- NEW: create a normal Django session for this user -----------
+        email = (request.data.get("email") or request.data.get("username") or "").strip()
+        password = request.data.get("password")
 
-        # set cookie
-        max_age = int(settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds())
-        secure = True
-        samesite = "Lax"  # or "None" with HTTPS only
+        user = None
+        if email and password:
+            # Depending on your USERNAME_FIELD, one of these will work
+            user = (
+                authenticate(request, email=email, password=password)
+                or authenticate(request, username=email, password=password)
+            )
+
+        if user is not None:
+            django_login(request, user)
+
+        # --- Move the refresh token to an HttpOnly cookie -----------------
+        refresh_lifetime = settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"]
+        max_age = int(refresh_lifetime.total_seconds())
+
         resp.set_cookie(
-            "refresh",
-            refresh,
+            key="refresh",
+            value=refresh,
             max_age=max_age,
-            path="/api/auth/jwt/",
             httponly=True,
-            secure=secure,
-            samesite=samesite,
+            secure=not settings.DEBUG,  # secure cookie in HTTPS/prod
+            samesite="Lax",
+            path="/api/auth/",
         )
-        return resp
 
+        # Body should not expose the refresh token
+        resp.data = {"access": access}
+        return resp
 
 class CookieTokenRefreshView(TokenRefreshView):
     """

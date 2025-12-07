@@ -204,7 +204,7 @@ export async function login(email: string, password: string) {
 }
 
 export async function register(email: string, password: string) {
-  const res = await fetch(`${API_BASE}/auth/register`, {
+  const res = await fetch(`${API_BASE}/auth/register/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -682,35 +682,101 @@ export async function deleteAdjustment(id: number) {
   await authedFetch(`/api/journal/account/adjustments/${id}/`, { method: "DELETE" });
 }
 
-// ----------------------- Account / Me & password ------------------------
+/* --------------------------- 2FA endpoints ----------------------------- */
 
-export type Me = {
-  id: number;
-  email: string;
-};
-
-/**
- * Fetch current logged-in user.
- */
-export async function fetchMe(): Promise<Me> {
-  const res = await apiFetch(`/auth/me/`);
+// Status of TOTP for current user
+export async function fetchTwoFAStatus(): Promise<{ enabled: boolean }> {
+  const res = await apiFetch("/auth/2fa/status/");
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
   return res.json();
 }
 
-/**
- * Change password for the current user.
- */
-export async function changePassword(oldPassword: string, newPassword: string) {
-  const res = await apiFetch(`/auth/password/change/`, {
+export type TwoFASetupResponse = {
+  otpauth_url: string;
+  issuer: string;
+  label: string;
+  // convenience alias used by the Account page
+  config_url: string;
+};
+
+// Start 2FA setup: backend returns an otpauth:// URL, we normalise it
+export async function setupTwoFA(): Promise<TwoFASetupResponse> {
+  const res = await apiFetch("/auth/2fa/setup/", { method: "POST" });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+  const j = await res.json();
+
+  const otpauthUrl: string = j.otpauth_url || j.config_url;
+  if (!otpauthUrl) {
+    throw new Error("2FA setup: server did not return otpauth_url");
+  }
+
+  return {
+    otpauth_url: otpauthUrl,
+    issuer: j.issuer ?? "Daytrading App",
+    label: j.label ?? "",
+    config_url: otpauthUrl,
+  };
+}
+
+// Confirm a token for the pending device
+export async function verifyTwoFA(token: string): Promise<void> {
+  const res = await apiFetch("/auth/2fa/confirm/", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+}
+
+// Disable 2FA for current user
+export async function disableTwoFA(): Promise<void> {
+  const res = await apiFetch("/auth/2fa/disable/", { method: "POST" });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+}
+
+/* --------------------------- Account helpers --------------------------- */
+
+// /api/auth/me/
+export async function fetchMe(): Promise<{
+  id: number;
+  email: string;
+  last_login?: string | null;
+  [key: string]: any;
+}> {
+  const res = await apiFetch("/auth/me/");
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+  return res.json();
+}
+
+type ChangePasswordPayload = {
+  old_password: string;
+  new_password1: string;
+  new_password2: string;
+};
+
+// /api/auth/password-change/
+export async function changePassword(payload: ChangePasswordPayload): Promise<void> {
+  if (payload.new_password1 !== payload.new_password2) {
+    throw new Error("New passwords do not match.");
+  }
+
+  const res = await apiFetch("/auth/password-change/", {
     method: "POST",
     body: JSON.stringify({
-      old_password: oldPassword,
-      new_password: newPassword,
+      old_password: payload.old_password,
+      new_password: payload.new_password1,
     }),
   });
   if (!res.ok) {
-    const msg = await res.text().catch(() => "Failed to change password");
-    throw new Error(msg || "Failed to change password");
+    throw new Error(await res.text());
   }
-  return res.json();
 }

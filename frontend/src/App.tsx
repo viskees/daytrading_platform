@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import TradesCalendar from "./components/Calendar";
 import { apiFetch } from "@/lib/api";
 import type { ReactNode, ChangeEvent, DragEvent, ClipboardEvent } from "react";
+import { QRCodeCanvas } from "qrcode.react";
 import {
   login as apiLogin,
   register as apiRegister,
@@ -34,6 +35,10 @@ import {
   updateTrade,
   fetchMe,
   changePassword,
+  fetchTwoFAStatus,
+  setupTwoFA,
+  verifyTwoFA,
+  disableTwoFA,
 } from "@/lib/api";
 import { onTradeClosed, emitTradeClosed } from "@/lib/events";
 import JournalTab from "./components/JournalTab";
@@ -1287,127 +1292,308 @@ export default function App() {
     </div>
   );
 
-  const AccountPage = () => {
-    const [me, setMe] = useState<{ id: number; email: string } | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [err, setErr] = useState<string | null>(null);
+const AccountPage = () => {
+  const [me, setMe] = useState<{ id: number; email: string; last_login?: string | null } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
 
-    const [oldPassword, setOldPassword] = useState("");
-    const [newPassword, setNewPassword] = useState("");
-    const [pwMsg, setPwMsg] = useState<string | null>(null);
-    const [pwErr, setPwErr] = useState<string | null>(null);
-    const [pwSaving, setPwSaving] = useState(false);
+  // Password change
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword1, setNewPassword1] = useState("");
+  const [newPassword2, setNewPassword2] = useState("");
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwMsg, setPwMsg] = useState<string | null>(null);
 
-    useEffect(() => {
-      let cancelled = false;
-      (async () => {
-        try {
-          setLoading(true);
-          const data = await fetchMe();
-          if (!cancelled) {
-            setMe(data);
-            setErr(null);
-          }
-        } catch (e: any) {
-          if (!cancelled) {
-            setErr("Failed to load account info");
-          }
-        } finally {
-          if (!cancelled) setLoading(false);
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
-    }, []);
+  // 2FA state
+  const [tfaEnabled, setTfaEnabled] = useState<boolean | null>(null);
+  const [tfaLoading, setTfaLoading] = useState(false);
+  const [tfaError, setTfaError] = useState<string | null>(null);
+  const [tfaConfigUrl, setTfaConfigUrl] = useState<string | null>(null);
+  const [tfaToken, setTfaToken] = useState("");
+  const [showQr, setShowQr] = useState(false);
 
-    const onChangePassword = async () => {
-      setPwMsg(null);
-      setPwErr(null);
-      setPwSaving(true);
+  // Derive a human-readable secret from the otpauth URL (optional manual entry)
+  const tfaSecret = useMemo(() => {
+    if (!tfaConfigUrl) return null;
+    const idx = tfaConfigUrl.indexOf("secret=");
+    if (idx === -1) return null;
+    const rest = tfaConfigUrl.slice(idx + "secret=".length);
+    return rest.split("&")[0];
+  }, [tfaConfigUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setLoading(true);
+      setErr(null);
       try {
-        await changePassword(oldPassword, newPassword);
-        setPwMsg("Password updated successfully.");
-        setOldPassword("");
-        setNewPassword("");
-      } catch (e: any) {
-        setPwErr(String(e?.message ?? "Failed to change password"));
+        const [meData, tfaStatus] = await Promise.all([
+          fetchMe(),
+          fetchTwoFAStatus().catch(() => null),
+        ]);
+
+        if (cancelled) return;
+        setMe(meData);
+        if (tfaStatus) setTfaEnabled(!!tfaStatus.enabled);
+      } catch (e) {
+        if (!cancelled) {
+          console.error(e);
+          setErr("Failed to load account info");
+        }
       } finally {
-        setPwSaving(false);
+        if (!cancelled) setLoading(false);
       }
+    })();
+
+    return () => {
+      // ✅ JS boolean, geen Python :)
+      cancelled = true;
     };
+  }, []);
 
-    return (
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwMsg(null);
+    setErr(null);
+    setPwSaving(true);
+    try {
+      await changePassword({
+        old_password: oldPassword,
+        new_password1: newPassword1,
+        new_password2: newPassword2,
+      });
+      setPwMsg("Password updated.");
+      setOldPassword("");
+      setNewPassword1("");
+      setNewPassword2("");
+    } catch (e: any) {
+      console.error(e);
+      setErr(e?.message ?? "Failed to change password");
+    } finally {
+      setPwSaving(false);
+    }
+  };
+
+  const startTfaSetup = async () => {
+    setTfaError(null);
+    setTfaLoading(true);
+    try {
+      const data = await setupTwoFA();
+      // not confirmed yet; status stays disabled until verify succeeds
+      setTfaEnabled(false);
+      setTfaConfigUrl(data.config_url || data.otpauth_url || null);
+      setShowQr(true);
+    } catch (e: any) {
+      console.error(e);
+      setTfaError(e?.message ?? "Failed to start 2FA setup");
+    } finally {
+      setTfaLoading(false);
+    }
+  };
+
+  const handleTfaVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTfaError(null);
+    setTfaLoading(true);
+    try {
+      await verifyTwoFA(tfaToken.trim());
+      setTfaToken("");
+      setTfaEnabled(true);
+      setShowQr(false);
+    } catch (e: any) {
+      console.error(e);
+      setTfaError(e?.message ?? "Invalid 2FA code");
+    } finally {
+      setTfaLoading(false);
+    }
+  };
+
+  const handleTfaDisable = async () => {
+    if (!window.confirm("Disable two-factor authentication for this account?")) {
+      return;
+    }
+    setTfaError(null);
+    setTfaLoading(true);
+    try {
+      await disableTwoFA();
+      setTfaEnabled(false);
+      setTfaConfigUrl(null);
+      setTfaToken("");
+      setShowQr(false);
+    } catch (e: any) {
+      console.error(e);
+      setTfaError(e?.message ?? "Failed to disable 2FA");
+    } finally {
+      setTfaLoading(false);
+    }
+  };
+
+  return (
+    <>
+      {/* QR modal */}
+      {showQr && tfaConfigUrl && (
+        <ModalShell
+          title="Scan this code with your authenticator app"
+          onClose={() => setShowQr(false)}
+        >
+          <div className="flex flex-col items-center gap-4">
+            <div className="rounded-lg border bg-white p-3">
+              <QRCodeCanvas value={tfaConfigUrl} size={220} />
+            </div>
+            {tfaSecret && (
+              <p className="text-xs text-muted-foreground text-center">
+                Of voer deze geheime sleutel handmatig in:{" "}
+                <code className="px-1 py-0.5 rounded bg-neutral-900 text-[11px]">
+                  {tfaSecret}
+                </code>
+              </p>
+            )}
+          </div>
+        </ModalShell>
+      )}
+
       <Card>
-        <CardContent className="p-4 space-y-6">
-          <h2 className="font-bold text-lg">Account</h2>
+        <CardContent className="p-6 space-y-8">
+          <h2 className="text-xl font-bold mb-2">Account</h2>
 
-          {loading ? (
-            <div className="text-sm text-muted-foreground">Loading account…</div>
-          ) : err ? (
-            <div className="text-sm text-red-600">{err}</div>
-          ) : (
+          {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
+          {err && <p className="text-sm text-red-600">{err}</p>}
+
+          {!loading && me && (
             <>
-              <div className="space-y-2">
-                <div className="text-xs text-muted-foreground">Email</div>
-                <div className="text-sm font-medium">{me?.email}</div>
-              </div>
+              {/* Basic info */}
+              <section className="space-y-2">
+                <h3 className="text-lg font-semibold">Profile</h3>
+                <div className="text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Email: </span>
+                    <span className="font-medium">{me.email}</span>
+                  </div>
+                  {me.last_login && (
+                    <div className="text-xs text-muted-foreground">
+                      Last login: {new Date(me.last_login).toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              </section>
 
-              <div className="border-t pt-4 space-y-3">
-                <h3 className="font-semibold text-sm">Change password</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <label className="block">
-                    <span className="text-xs text-muted-foreground">Current password</span>
+              {/* Password change */}
+              <section className="space-y-3">
+                <h3 className="text-lg font-semibold">Change password</h3>
+                <form className="grid grid-cols-1 md:grid-cols-3 gap-3" onSubmit={handlePasswordChange}>
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">Current password</div>
                     <Input
                       type="password"
                       value={oldPassword}
                       onChange={(e) => setOldPassword(e.target.value)}
-                      autoComplete="current-password"
                     />
-                  </label>
-                  <label className="block">
-                    <span className="text-xs text-muted-foreground">New password</span>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">New password</div>
                     <Input
                       type="password"
-                      value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
-                      autoComplete="new-password"
+                      value={newPassword1}
+                      onChange={(e) => setNewPassword1(e.target.value)}
                     />
-                  </label>
-                </div>
-                <Button
-                  size="sm"
-                  onClick={onChangePassword}
-                  disabled={pwSaving || !oldPassword || !newPassword}
-                >
-                  {pwSaving ? "Saving…" : "Update password"}
-                </Button>
-                {pwMsg && <div className="text-xs text-emerald-600 mt-1">{pwMsg}</div>}
-                {pwErr && <div className="text-xs text-red-600 mt-1">{pwErr}</div>}
-              </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">Repeat new password</div>
+                    <Input
+                      type="password"
+                      value={newPassword2}
+                      onChange={(e) => setNewPassword2(e.target.value)}
+                    />
+                  </div>
+                  <div className="md:col-span-3 flex items-center gap-3">
+                    <Button type="submit" disabled={pwSaving}>
+                      {pwSaving ? "Saving…" : "Update password"}
+                    </Button>
+                    {pwMsg && <span className="text-xs text-emerald-500">{pwMsg}</span>}
+                  </div>
+                </form>
+              </section>
 
-              <div className="border-t pt-4 space-y-2">
-                <h3 className="font-semibold text-sm">Two-Factor Authentication (2FA)</h3>
-                <p className="text-xs text-muted-foreground">
-                  2FA is managed via the server&rsquo;s security pages. For now you can configure it
-                  via the Django interface. Later we can embed a full SPA flow.
+              {/* 2FA */}
+              <section className="space-y-3">
+                <h3 className="text-lg font-semibold">Two-Factor Authentication</h3>
+                <p className="text-sm text-muted-foreground">
+                  Protect your account with a TOTP authenticator app (Google Authenticator, 1Password, etc.).
                 </p>
-                <Button
-                  asChild
-                  size="sm"
-                  variant="outline"
-                >
-                  <a href="/account/login/">
-                    Open server security / 2FA
-                  </a>
-                </Button>
-              </div>
+
+                <div className="flex flex-wrap items-center gap-3 text-sm">
+                  <span className="text-muted-foreground">Status:</span>
+                  <span
+                    className={
+                      tfaEnabled
+                        ? "font-semibold text-emerald-500"
+                        : "font-semibold text-red-500"
+                    }
+                  >
+                    {tfaEnabled ? "Enabled" : "Disabled"}
+                  </span>
+
+                  {!tfaEnabled && (
+                    <Button size="sm" onClick={startTfaSetup} disabled={tfaLoading}>
+                      {tfaLoading ? "Starting…" : "Set up 2FA"}
+                    </Button>
+                  )}
+                  {tfaEnabled && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleTfaDisable}
+                      disabled={tfaLoading}
+                    >
+                      Disable 2FA
+                    </Button>
+                  )}
+                </div>
+
+                {tfaConfigUrl && (
+                  <div className="mt-2 rounded-xl border p-3 space-y-2 text-xs">
+                    <div className="font-semibold">Setup instructions</div>
+                    <ol className="list-decimal list-inside space-y-1">
+                      <li>Click “Set up 2FA” to open the QR modal and scan the code.</li>
+                      {tfaSecret && (
+                        <li>
+                          Or enter this secret manually:{" "}
+                          <code className="px-1 py-0.5 rounded bg-neutral-900 text-[11px]">
+                            {tfaSecret}
+                          </code>
+                        </li>
+                      )}
+                    </ol>
+                  </div>
+                )}
+
+                <form className="mt-3 flex flex-wrap items-end gap-3" onSubmit={handleTfaVerify}>
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">Test / confirm a 2FA code</div>
+                    <Input
+                      inputMode="numeric"
+                      pattern="\d*"
+                      maxLength={8}
+                      value={tfaToken}
+                      onChange={(e) => setTfaToken(e.target.value)}
+                      placeholder="123456"
+                      className="w-32"
+                    />
+                  </div>
+                  <Button type="submit" size="sm" disabled={tfaLoading || !tfaToken}>
+                    Verify code
+                  </Button>
+                  {tfaError && <div className="text-xs text-red-600">{tfaError}</div>}
+                </form>
+              </section>
             </>
           )}
         </CardContent>
       </Card>
-    );
-  };
+    </>
+  );
+};
 
   const RiskSettings = () => {
     // ---- Equity state (scoped to Risk page) ----
