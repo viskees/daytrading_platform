@@ -1,7 +1,9 @@
 # accounts/views.py
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
 from django.urls import reverse
 
 from django_otp import devices_for_user
@@ -26,15 +28,37 @@ User = get_user_model()
 # Email verification helpers
 # ----------------------------------------------------------------------
 def _send_verify_email(user, request):
+    """
+    Send a verification email using an HTML template with a plain-text fallback.
+    Used both for initial registration and for resend.
+    """
     token = make_email_token(user.id)
-    verify_url = request.build_absolute_uri(reverse("verify-email")) + f"?token={token}"
-    send_mail(
-        subject="Verify your email",
-        message=f"Click to verify: {verify_url}",
-        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@example.com"),
-        recipient_list=[user.email],
-        fail_silently=True,
+    verify_url = request.build_absolute_uri(
+        reverse("verify-email")
+    ) + f"?token={token}"
+
+    context = {
+        "user": user,
+        "activation_url": verify_url,
+        "site_name": getattr(settings, "SITE_NAME", "Trade Journal"),
+    }
+
+    subject = "Verify your Trade Journal account"
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@example.com")
+
+    # Render HTML template
+    html_body = render_to_string("email/verify_email.html", context)
+    # Plain-text fallback for mail clients that don't support HTML
+    text_body = strip_tags(html_body)
+
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=from_email,
+        to=[user.email],
     )
+    msg.attach_alternative(html_body, "text/html")
+    msg.send(fail_silently=False)
 
 
 class RegisterView(generics.CreateAPIView):
