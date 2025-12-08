@@ -17,7 +17,7 @@ from rest_framework_simplejwt.token_blacklist.models import (
     OutstandingToken,
 )
 
-from rest_framework import status
+from django_otp.plugins.otp_totp.models import TOTPDevice
 
 
 import datetime
@@ -27,14 +27,22 @@ User = get_user_model()
 
 class EmailOnlyTokenSerializer(TokenObtainPairSerializer):
     """
-    Accepts { "email": "...", "password": "..." }.
-    We add an 'email' field and remove the requirement for 'username'.
+    Accepts { "email": "...", "password": "...", "otp_token": "123456" }.
+    We:
+      - map email -> the user model's USERNAME_FIELD for SimpleJWT
+      - enforce a TOTP 2FA code if the user has a confirmed TOTPDevice
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # add email field; make username optional (or drop it)
         self.fields["email"] = serializers.EmailField(required=True, write_only=True)
+        # optional one-time password (2FA); only enforced if user has a confirmed TOTP device
+        self.fields["otp_token"] = serializers.CharField(
+            required=False,
+            write_only=True,
+            allow_blank=True,
+        )
         # Make 'username' not required so DRF stops complaining if present
         if "username" in self.fields:
             self.fields["username"].required = False
@@ -42,11 +50,14 @@ class EmailOnlyTokenSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         email = (attrs.get("email") or "").strip()
         password = attrs.get("password") or ""
+        otp_token = (attrs.get("otp_token") or "").strip()
+
         if not email or not password:
             raise serializers.ValidationError(
                 {"detail": "Email and password are required."}
             )
 
+        # Find user by email (case-insensitive)
         try:
             user = User.objects.get(email__iexact=email)
         except User.DoesNotExist:
@@ -54,13 +65,39 @@ class EmailOnlyTokenSerializer(TokenObtainPairSerializer):
                 {"detail": "No active account found with the given credentials"}
             )
 
+        # If the user has at least one confirmed TOTP device, require a valid 2FA code.
+        devices = TOTPDevice.objects.filter(user=user, confirmed=True)
+
+        if devices.exists():
+            # 2FA is enabled for this user → OTP is mandatory
+            if not otp_token:
+                raise serializers.ValidationError(
+                    {"detail": "2FA code required."}
+                )
+
+            verified = False
+            # Try all confirmed devices (usually there will be just one)
+            for device in devices.order_by("-id"):
+                # verify_token() handles time drift and throttling internally
+                if device.verify_token(otp_token):
+                    verified = True
+                    break
+
+            if not verified:
+                raise serializers.ValidationError(
+                    {"detail": "Invalid 2FA code."}
+                )
+
         # SimpleJWT expects a 'username' internally; map it from the user we found
         username_field = getattr(User, "USERNAME_FIELD", "username")
         attrs["username"] = getattr(user, username_field)
         # Keep password as-is
         attrs["password"] = password
-        return super().validate(attrs)
+        # otp_token is only for this serializer; don't pass it down into SimpleJWT
+        attrs.pop("otp_token", None)
 
+        return super().validate(attrs)
+    
 
 class EmailOnlyTokenView(TokenObtainPairView):
     serializer_class = EmailOnlyTokenSerializer

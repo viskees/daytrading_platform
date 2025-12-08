@@ -984,7 +984,7 @@ function Unauthed() {
       <Card>
         <CardContent className="p-6 space-y-4">
           <div className="flex items-center justify-between">
-            <h1 className="text-xl font-bold">User Settings</h1>
+            <h1 className="text-xl font-bold">Login</h1>
             <div className="flex items-center gap-2 text-sm">
               <span>Dark mode</span>
               <Switch checked={dark} onCheckedChange={setDark} />
@@ -1050,21 +1050,6 @@ function Unauthed() {
               )}
             </form>
             {/* FORM ENDS HERE */}
-
-            <div className="space-y-2">
-              <div className="text-sm font-medium">About this app</div>
-              <p className="text-xs text-muted-foreground">
-                Your trades, risk settings, and screenshots are stored per user account.
-                You can manage your profile, password, and security options later on the
-                <span className="font-semibold"> Account</span> tab.
-              </p>
-            </div>
-          </div>
-
-          <div className="text-xs text-muted-foreground">
-            Endpoints used now:
-            <code>/api/auth/jwt/token/</code>, <code>/api/auth/register</code>,{" "}
-            <code>/api/journal/settings/</code>, <code>/api/journal/trades/</code>
           </div>
         </CardContent>
       </Card>
