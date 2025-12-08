@@ -166,11 +166,7 @@ export async function authedFetch(
     }
   }
 
-  if (!res.ok) {
-    // Surface server error body to callers
-    const text = await res.text().catch(() => `${res.status}`);
-    throw new Error(text || `HTTP ${res.status}`);
-  }
+  // NOTE: do NOT throw here; callers can look at res.ok themselves
   return res;
 }
 
@@ -180,14 +176,25 @@ export async function apiFetch(path: string, opts: RequestInit = {}) {
 }
 
 /* -------------------------- Auth endpoints ---------------------------- */
-export async function login(email: string, password: string) {
+export async function login(email: string, password: string, mfaCode?: string) {
+  const body: any = { email, password };
+
+  // Optional MFA / TOTP code (for 2FA-enabled users)
+  if (mfaCode && mfaCode.trim()) {
+    body.otp_token = mfaCode.trim(); // 👈 adapt name if your backend expects something else
+  }
+
   // Backend sets refresh as HttpOnly cookie; body returns { access }
   const res = await fetch(`${API_BASE}/auth/jwt/token/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") || "" },
-    body: JSON.stringify({ email, password }),
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCookie("csrftoken") || "",
+    },
+    body: JSON.stringify(body),
     credentials: "include",
   });
+
   if (!res.ok) {
     let msg = "";
     try {
@@ -195,21 +202,52 @@ export async function login(email: string, password: string) {
     } catch {}
     throw new Error(`Login failed: ${msg || res.statusText}`);
   }
+
   const j = (await res.json()) as { access?: string; refresh?: string };
   if (!j?.access) throw new Error("Login failed: no access token returned");
+
   setAccessToken(j.access);
   // temporary bridge for any old code path
   setToken({ access: j.access });
   return { access: j.access };
 }
 
-export async function register(email: string, password: string) {
+export async function register(
+  email: string,
+  password: string,
+  displayName?: string
+) {
+  const payload: Record<string, unknown> = {
+    email,
+    password,
+  };
+  if (displayName && displayName.trim()) {
+    payload.display_name = displayName.trim();
+  }
+
   const res = await fetch(`${API_BASE}/auth/register/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCookie("csrftoken") || "",
+    },
+    body: JSON.stringify(payload),
+    credentials: "include",
   });
-  if (!res.ok) throw new Error("Register failed");
+
+  if (!res.ok) {
+    let msg = "Register failed";
+    try {
+      const data = await res.json();
+      if (typeof data === "string") msg = data;
+      else if (data?.detail) msg = data.detail;
+      else msg = JSON.stringify(data);
+    } catch {
+      // ignore parse error, keep generic message
+    }
+    throw new Error(msg);
+  }
+
   return res.json();
 }
 

@@ -927,122 +927,150 @@ export default function App() {
   }, [authed, refreshDashboard]);
 
   /* ---------- Auth Landing ---------- */
-  function Unauthed() {
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [err, setErr] = useState<string | null>(null);
-    const [loading, setLoading] = useState(false);
+function Unauthed() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [mfaCode, setMfaCode] = useState(""); // 👈 NEW
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [registerMsg, setRegisterMsg] = useState<string | null>(null); // 👈 NEW
 
-    const doLogin = async () => {
-      setErr(null);
-      setLoading(true);
-      try {
-        await apiLogin(email, password);
-        setAuthed(true);
-      } catch {
-        setErr("Login failed");
-      } finally {
-        setLoading(false);
+  const doLogin = async () => {
+    setErr(null);
+    setLoading(true);
+    try {
+      await apiLogin(email, password, mfaCode || undefined);
+      setAuthed(true);
+    } catch (e: any) {
+      const msg = String(e?.message ?? "Login failed");
+      // Optional: surface nicer message if backend mentions 2FA
+      if (msg.toLowerCase().includes("otp") || msg.toLowerCase().includes("2fa")) {
+        setErr(
+          "This account requires a 2FA code. Please enter the 6-digit code from your authenticator app."
+        );
+      } else {
+        setErr(msg);
       }
-    };
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    const doRegister = async () => {
-      setErr(null); setLoading(true);
-      try {
-        await apiRegister(email, password);
-        await apiLogin(email, password);
-        setAuthed(true);
-      } catch {
-        setErr("Register failed");
-      } finally {
-        setLoading(false);
-      }
-    };
+  const doRegister = async () => {
+    setErr(null);
+    setRegisterMsg(null);
+    setLoading(true);
+    try {
+      // Create account but DO NOT auto-login; activation email must be used first
+      await apiRegister(email, password);
+      setRegisterMsg(
+        `We have sent an activation link to ${email}. ` +
+          "Please confirm your email first. After activation you can log in above."
+      );
+    } catch (e: any) {
+      setErr(e?.message ?? "Register failed");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      if (!loading) doLogin();
-    };
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!loading) doLogin();
+  };
 
-    return (
-      <div className="max-w-2xl mx-auto py-10 space-y-6">
-        <Card>
-          <CardContent className="p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h1 className="text-xl font-bold">User Settings</h1>
-              <div className="flex items-center gap-2 text-sm">
-                <span>Dark mode</span>
-                <Switch checked={dark} onCheckedChange={setDark} />
-              </div>
+  return (
+    <div className="max-w-2xl mx-auto py-10 space-y-6">
+      <Card>
+        <CardContent className="p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold">User Settings</h1>
+            <div className="flex items-center gap-2 text-sm">
+              <span>Dark mode</span>
+              <Switch checked={dark} onCheckedChange={setDark} />
             </div>
+          </div>
 
-            <p className="text-sm text-muted-foreground">
-              Please register or log in to access the trading app.
-            </p>
+          <p className="text-sm text-muted-foreground">
+            Please register or log in to access the trading app.
+          </p>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* FORM STARTS HERE */}
-              <form className="space-y-2" onSubmit={handleSubmit}>
-                <div className="text-sm font-medium">Email</div>
-                <Input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  autoComplete="email"
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* FORM STARTS HERE */}
+            <form className="space-y-2" onSubmit={handleSubmit}>
+              <div className="text-sm font-medium">Email</div>
+              <Input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                disabled={loading}
+              />
+
+              <div className="text-sm font-medium">Password</div>
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete="current-password"
+                disabled={loading}
+              />
+
+              {/* MFA code (optional for users without 2FA, required by backend for users with 2FA) */}
+              <div className="text-sm font-medium mt-2">2FA code (if enabled)</div>
+              <Input
+                type="text"
+                inputMode="numeric"
+                pattern="\d*"
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value)}
+                placeholder="123456"
+                disabled={loading}
+              />
+
+              <div className="flex gap-2 mt-3">
+                <Button type="submit" disabled={loading}>
+                  Log in
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={doRegister}
                   disabled={loading}
-                />
-
-                <div className="text-sm font-medium">Password</div>
-                <Input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  autoComplete="current-password"
-                  disabled={loading}
-                />
-
-                <div className="flex gap-2 mt-2">
-                  <Button type="submit" disabled={loading}>Log in</Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={doRegister}
-                    disabled={loading}
-                  >
-                    Register
-                  </Button>
-                </div>
-
-                {err && (
-                  <div className="text-red-600 text-sm mt-2">{err}</div>
-                )}
-              </form>
-              {/* FORM ENDS HERE */}
-
-              <div className="space-y-2">
-                <div className="text-sm font-medium">About this app</div>
-                <p className="text-xs text-muted-foreground">
-                  Your trades, risk settings, and screenshots are stored per user account.
-                  You can manage your profile, password, and security options later on the
-                  <span className="font-semibold"> Account</span> tab.
-                </p>
+                >
+                  Register
+                </Button>
               </div>
-            </div>
 
-            <div className="text-xs text-muted-foreground">
-              Endpoints used now:
-              <code>/api/auth/jwt/token/</code>,
-              <code>/api/auth/register</code>,
-              <code>/api/journal/settings/</code>,
-              <code>/api/journal/trades/</code>
+              {err && <div className="text-red-600 text-sm mt-2">{err}</div>}
+              {registerMsg && (
+                <div className="text-emerald-600 text-xs mt-2">{registerMsg}</div>
+              )}
+            </form>
+            {/* FORM ENDS HERE */}
+
+            <div className="space-y-2">
+              <div className="text-sm font-medium">About this app</div>
+              <p className="text-xs text-muted-foreground">
+                Your trades, risk settings, and screenshots are stored per user account.
+                You can manage your profile, password, and security options later on the
+                <span className="font-semibold"> Account</span> tab.
+              </p>
             </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+          </div>
+
+          <div className="text-xs text-muted-foreground">
+            Endpoints used now:
+            <code>/api/auth/jwt/token/</code>, <code>/api/auth/register</code>,{" "}
+            <code>/api/journal/settings/</code>, <code>/api/journal/trades/</code>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
 
   /* ---------- Widgets ---------- */
   const RiskSummary = () => (
@@ -1437,7 +1465,10 @@ const AccountPage = () => {
           title="Scan this code with your authenticator app"
           onClose={() => setShowQr(false)}
         >
-          <div className="flex flex-col items-center gap-4">
+          <form
+            className="flex flex-col items-center gap-4"
+            onSubmit={handleTfaVerify}
+          >
             <div className="rounded-lg border bg-white p-3">
               <QRCodeCanvas value={tfaConfigUrl} size={220} />
             </div>
@@ -1449,10 +1480,35 @@ const AccountPage = () => {
                 </code>
               </p>
             )}
-          </div>
+
+            <div className="w-full max-w-xs space-y-2">
+              <div className="text-xs text-muted-foreground">
+                Voer nu de 6-cijferige code van je app in om 2FA te activeren.
+              </div>
+              <Input
+                inputMode="numeric"
+                pattern="\d*"
+                maxLength={8}
+                value={tfaToken}
+                onChange={(e) => setTfaToken(e.target.value)}
+                placeholder="123456"
+                className="w-full"
+              />
+            </div>
+          
+            <div className="flex items-center gap-3">
+              <Button type="submit" size="sm" disabled={tfaLoading || !tfaToken}>
+                {tfaLoading ? "Verifiëren…" : "Code verifiëren"}
+              </Button>
+              {tfaError && (
+                <div className="text-xs text-red-600 max-w-xs text-center">
+                  {tfaError}
+                </div>
+              )}
+            </div>
+          </form>
         </ModalShell>
       )}
-
       <Card>
         <CardContent className="p-6 space-y-8">
           <h2 className="text-xl font-bold mb-2">Account</h2>

@@ -85,13 +85,12 @@ class CookieTokenObtainPairView(EmailOnlyTokenView):
         if not (access and refresh):
             return resp
 
-        # --- NEW: create a normal Django session for this user -----------
+        # Create a normal Django session for this user
         email = (request.data.get("email") or request.data.get("username") or "").strip()
         password = request.data.get("password")
 
         user = None
         if email and password:
-            # Depending on your USERNAME_FIELD, one of these will work
             user = (
                 authenticate(request, email=email, password=password)
                 or authenticate(request, username=email, password=password)
@@ -100,7 +99,7 @@ class CookieTokenObtainPairView(EmailOnlyTokenView):
         if user is not None:
             django_login(request, user)
 
-        # --- Move the refresh token to an HttpOnly cookie -----------------
+        # Move the refresh token to an HttpOnly cookie
         refresh_lifetime = settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"]
         max_age = int(refresh_lifetime.total_seconds())
 
@@ -109,14 +108,15 @@ class CookieTokenObtainPairView(EmailOnlyTokenView):
             value=refresh,
             max_age=max_age,
             httponly=True,
-            secure=not settings.DEBUG,  # secure cookie in HTTPS/prod
+            secure=not settings.DEBUG,   # HTTPS in prod, HTTP in DEBUG
             samesite="Lax",
-            path="/api/auth/",
+            path="/api/auth/jwt/",       # 👈 match refresh + logout
         )
 
         # Body should not expose the refresh token
         resp.data = {"access": access}
         return resp
+    
 
 class CookieTokenRefreshView(TokenRefreshView):
     """
@@ -132,15 +132,12 @@ class CookieTokenRefreshView(TokenRefreshView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Build the serializer *explicitly* with cookie-backed refresh
         serializer = self.get_serializer(data={"refresh": refresh_cookie})
         try:
             serializer.is_valid(raise_exception=True)
         except TokenError as e:
-            # Re-raise as DRF/JSW InvalidToken, which yields a proper 401 JSON error
             raise InvalidToken(e.args[0])
 
-        # validated_data may include "access" and (if rotating) "refresh"
         data = serializer.validated_data
         access = data.get("access")
         new_refresh = data.get("refresh")
@@ -156,11 +153,11 @@ class CookieTokenRefreshView(TokenRefreshView):
                 max_age=max_age,
                 path="/api/auth/jwt/",
                 httponly=True,
-                secure=True,  # dev: OK on https://localhost even if cert is self-signed
-                samesite="Lax",  # or "None" if cross-site + HTTPS
+                secure=not settings.DEBUG,  # 👈 same rule as login
+                samesite="Lax",
             )
         return resp
-
+    
 
 class LogoutView(APIView):
     """
