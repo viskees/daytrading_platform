@@ -14,6 +14,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.shortcuts import render
 
 from .serializers import (
     RegisterSerializer,
@@ -95,23 +96,56 @@ def resend_verification(request):
     return Response({"detail": "sent"}, status=200)
 
 
-@api_view(["GET"])
-@permission_classes([permissions.AllowAny])
+# No DRF decorators anymore – this is now a normal Django view
 def verify_email(request):
+    """
+    Email verification endpoint used by the link in the activation mail.
+
+    It still performs the same activation logic, but shows a
+    human-friendly HTML page instead of JSON.
+    """
     token = request.GET.get("token")
+    context = {}
+
     if not token:
-        return Response({"detail": "missing token"}, status=400)
+        context["status"] = "missing-token"
+        return render(
+            request,
+            "email/verify_email_result.html",
+            context,
+            status=400,
+        )
+
+    from .tokens import read_email_token  # already imported at top, so you may omit this line
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+
     try:
         uid = read_email_token(token)
         user = User.objects.get(id=uid)
     except Exception:
-        return Response({"detail": "invalid token"}, status=400)
+        context["status"] = "invalid-token"
+        return render(
+            request,
+            "email/verify_email_result.html",
+            context,
+            status=400,
+        )
 
     if not user.is_active:
         user.is_active = True
         user.save(update_fields=["is_active"])
 
-    return Response({"detail": "verified"}, status=200)
+    context["status"] = "success"
+    context["user_email"] = user.email
+
+    return render(
+        request,
+        "email/verify_email_result.html",
+        context,
+        status=200,
+    )
 
 
 # ----------------------------------------------------------------------
