@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import TradesCalendar from "./components/Calendar";
 import { apiFetch } from "@/lib/api";
 import type { ReactNode, ChangeEvent, DragEvent, ClipboardEvent } from "react";
+import { QRCodeCanvas } from "qrcode.react";
 import {
   login as apiLogin,
   register as apiRegister,
@@ -32,6 +33,12 @@ import {
   type AdjustmentReason,
   setUnauthorizedHandler,
   updateTrade,
+  fetchMe,
+  changePassword,
+  fetchTwoFAStatus,
+  setupTwoFA,
+  verifyTwoFA,
+  disableTwoFA,
 } from "@/lib/api";
 import { onTradeClosed, emitTradeClosed } from "@/lib/events";
 import JournalTab from "./components/JournalTab";
@@ -98,6 +105,7 @@ type DaySummary = {
    Helpers + Tests
    ========================= */
 const THEME_KEY = "theme"; // 'dark' | 'light'
+const LAST_EQUITY_KEY = "equity_last_known";
 
 export function calcUsedPctOfBudget(usedDailyRiskPct: number, maxDailyLossPct: number): number {
   if (!isFinite(usedDailyRiskPct) || !isFinite(maxDailyLossPct) || maxDailyLossPct <= 0) return 0;
@@ -517,7 +525,9 @@ const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "Ran
    App
    ========================= */
 export default function App() {
-  const [page, setPage] = useState<"dashboard" | "stocks" | "risk" | "journal">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "stocks" | "risk" | "journal" | "account">(
+    "dashboard"
+  );
   const [risk, setRisk] = useState<RiskPolicy>(MOCK_RISK);
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
   const [dark, setDark] = useState<boolean>(getInitialDark());
@@ -844,19 +854,36 @@ export default function App() {
       try {
         const settings = await apiFetchUserSettings();
         if (settings) {
-          setDark(!!settings.dark_mode);
-          setRisk(r => ({
+          // 🔹 Do NOT override a user-chosen theme.
+          // Only adopt server theme if there is no explicit local preference yet.
+          let stored: string | null = null;
+          try {
+            stored = localStorage.getItem(THEME_KEY);
+          } catch {
+            stored = null;
+          }
+          if (!stored) {
+            setDark(!!settings.dark_mode);
+          }
+
+          setRisk((r) => ({
             ...r,
-            maxRiskPerTradePct: Number(settings.max_risk_per_trade_pct ?? r.maxRiskPerTradePct),
-            maxDailyLossPct: Number(settings.max_daily_loss_pct ?? r.maxDailyLossPct),
-            maxTradesPerDay: Number(settings.max_trades_per_day ?? r.maxTradesPerDay),
+            maxRiskPerTradePct: Number(
+              settings.max_risk_per_trade_pct ?? r.maxRiskPerTradePct
+            ),
+            maxDailyLossPct: Number(
+              settings.max_daily_loss_pct ?? r.maxDailyLossPct
+            ),
+            maxTradesPerDay: Number(
+              settings.max_trades_per_day ?? r.maxTradesPerDay
+            ),
           }));
         }
-      } catch { }
+      } catch {}
       try {
         const trades = await apiFetchOpenTrades();
         setOpenTrades(Array.isArray(trades) ? (trades as Trade[]) : []);
-      } catch { }
+      } catch {}
       // Initial pull (coalesced & rate-limited)
       void refreshDashboard();
     })();
@@ -900,120 +927,135 @@ export default function App() {
   }, [authed, refreshDashboard]);
 
   /* ---------- Auth Landing ---------- */
-  function Unauthed() {
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [err, setErr] = useState<string | null>(null);
-    const [loading, setLoading] = useState(false);
+function Unauthed() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [mfaCode, setMfaCode] = useState(""); // 👈 NEW
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [registerMsg, setRegisterMsg] = useState<string | null>(null); // 👈 NEW
 
-    const doLogin = async () => {
-      setErr(null);
-      setLoading(true);
-      try {
-        await apiLogin(email, password);
-        setAuthed(true);
-      } catch {
-        setErr("Login failed");
-      } finally {
-        setLoading(false);
+  const doLogin = async () => {
+    setErr(null);
+    setLoading(true);
+    try {
+      await apiLogin(email, password, mfaCode || undefined);
+      setAuthed(true);
+    } catch (e: any) {
+      const msg = String(e?.message ?? "Login failed");
+      // Optional: surface nicer message if backend mentions 2FA
+      if (msg.toLowerCase().includes("otp") || msg.toLowerCase().includes("2fa")) {
+        setErr(
+          "This account requires a 2FA code. Please enter the 6-digit code from your authenticator app."
+        );
+      } else {
+        setErr(msg);
       }
-    };
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    const doRegister = async () => {
-      setErr(null); setLoading(true);
-      try {
-        await apiRegister(email, password);
-        await apiLogin(email, password);
-        setAuthed(true);
-      } catch {
-        setErr("Register failed");
-      } finally {
-        setLoading(false);
-      }
-    };
+  const doRegister = async () => {
+    setErr(null);
+    setRegisterMsg(null);
+    setLoading(true);
+    try {
+      // Create account but DO NOT auto-login; activation email must be used first
+      await apiRegister(email, password);
+      setRegisterMsg(
+        `We have sent an activation link to ${email}. ` +
+          "Please confirm your email first. After activation you can log in above."
+      );
+    } catch (e: any) {
+      setErr(e?.message ?? "Register failed");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      if (!loading) doLogin();
-    };
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!loading) doLogin();
+  };
 
-    return (
-      <div className="max-w-2xl mx-auto py-10 space-y-6">
-        <Card>
-          <CardContent className="p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h1 className="text-xl font-bold">User Settings</h1>
-              <div className="flex items-center gap-2 text-sm">
-                <span>Dark mode</span>
-                <Switch checked={dark} onCheckedChange={setDark} />
-              </div>
+  return (
+    <div className="max-w-2xl mx-auto py-10 space-y-6">
+      <Card>
+        <CardContent className="p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold">Login</h1>
+            <div className="flex items-center gap-2 text-sm">
+              <span>Dark mode</span>
+              <Switch checked={dark} onCheckedChange={setDark} />
             </div>
+          </div>
 
-            <p className="text-sm text-muted-foreground">
-              Please register or log in to access the trading app.
-            </p>
+          <p className="text-sm text-muted-foreground">
+            Please register or log in to access the trading app.
+          </p>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* FORM STARTS HERE */}
-              <form className="space-y-2" onSubmit={handleSubmit}>
-                <div className="text-sm font-medium">Email</div>
-                <Input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  autoComplete="email"
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* FORM STARTS HERE */}
+            <form className="space-y-2" onSubmit={handleSubmit}>
+              <div className="text-sm font-medium">Email</div>
+              <Input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                disabled={loading}
+              />
+
+              <div className="text-sm font-medium">Password</div>
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete="current-password"
+                disabled={loading}
+              />
+
+              {/* MFA code (optional for users without 2FA, required by backend for users with 2FA) */}
+              <div className="text-sm font-medium mt-2">2FA code (if enabled)</div>
+              <Input
+                type="text"
+                inputMode="numeric"
+                pattern="\d*"
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value)}
+                placeholder="123456"
+                disabled={loading}
+              />
+
+              <div className="flex gap-2 mt-3">
+                <Button type="submit" disabled={loading}>
+                  Log in
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={doRegister}
                   disabled={loading}
-                />
-
-                <div className="text-sm font-medium">Password</div>
-                <Input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  autoComplete="current-password"
-                  disabled={loading}
-                />
-
-                <div className="flex gap-2 mt-2">
-                  <Button type="submit" disabled={loading}>Log in</Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={doRegister}
-                    disabled={loading}
-                  >
-                    Register
-                  </Button>
-                </div>
-
-                {err && (
-                  <div className="text-red-600 text-sm mt-2">{err}</div>
-                )}
-              </form>
-              {/* FORM ENDS HERE */}
-
-              <div className="space-y-2">
-                <div className="text-sm font-medium">Two-Factor Authentication</div>
-                <p className="text-xs text-muted-foreground">
-                  MFA is pre-setup server-side. We’ll wire the QR + verify endpoints next.
-                </p>
+                >
+                  Register
+                </Button>
               </div>
-            </div>
 
-            <div className="text-xs text-muted-foreground">
-              Endpoints used now:
-              <code>/api/auth/jwt/token/</code>,
-              <code>/api/auth/register</code>,
-              <code>/api/journal/settings/</code>,
-              <code>/api/journal/trades/</code>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+              {err && <div className="text-red-600 text-sm mt-2">{err}</div>}
+              {registerMsg && (
+                <div className="text-emerald-600 text-xs mt-2">{registerMsg}</div>
+              )}
+            </form>
+            {/* FORM ENDS HERE */}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
 
   /* ---------- Widgets ---------- */
   const RiskSummary = () => (
@@ -1262,6 +1304,337 @@ export default function App() {
       </Card>
     </div>
   );
+
+const AccountPage = () => {
+  const [me, setMe] = useState<{ id: number; email: string; last_login?: string | null } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Password change
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword1, setNewPassword1] = useState("");
+  const [newPassword2, setNewPassword2] = useState("");
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwMsg, setPwMsg] = useState<string | null>(null);
+
+  // 2FA state
+  const [tfaEnabled, setTfaEnabled] = useState<boolean | null>(null);
+  const [tfaLoading, setTfaLoading] = useState(false);
+  const [tfaError, setTfaError] = useState<string | null>(null);
+  const [tfaConfigUrl, setTfaConfigUrl] = useState<string | null>(null);
+  const [tfaToken, setTfaToken] = useState("");
+  const [showQr, setShowQr] = useState(false);
+
+  // Derive a human-readable secret from the otpauth URL (optional manual entry)
+  const tfaSecret = useMemo(() => {
+    if (!tfaConfigUrl) return null;
+    const idx = tfaConfigUrl.indexOf("secret=");
+    if (idx === -1) return null;
+    const rest = tfaConfigUrl.slice(idx + "secret=".length);
+    return rest.split("&")[0];
+  }, [tfaConfigUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setLoading(true);
+      setErr(null);
+      try {
+        const [meData, tfaStatus] = await Promise.all([
+          fetchMe(),
+          fetchTwoFAStatus().catch(() => null),
+        ]);
+
+        if (cancelled) return;
+        setMe(meData);
+        if (tfaStatus) setTfaEnabled(!!tfaStatus.enabled);
+      } catch (e) {
+        if (!cancelled) {
+          console.error(e);
+          setErr("Failed to load account info");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      // ✅ JS boolean, geen Python :)
+      cancelled = true;
+    };
+  }, []);
+
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwMsg(null);
+    setErr(null);
+    setPwSaving(true);
+    try {
+      await changePassword({
+        old_password: oldPassword,
+        new_password1: newPassword1,
+        new_password2: newPassword2,
+      });
+      setPwMsg("Password updated.");
+      setOldPassword("");
+      setNewPassword1("");
+      setNewPassword2("");
+    } catch (e: any) {
+      console.error(e);
+      setErr(e?.message ?? "Failed to change password");
+    } finally {
+      setPwSaving(false);
+    }
+  };
+
+  const startTfaSetup = async () => {
+    setTfaError(null);
+    setTfaLoading(true);
+    try {
+      const data = await setupTwoFA();
+      // not confirmed yet; status stays disabled until verify succeeds
+      setTfaEnabled(false);
+      setTfaConfigUrl(data.config_url || data.otpauth_url || null);
+      setShowQr(true);
+    } catch (e: any) {
+      console.error(e);
+      setTfaError(e?.message ?? "Failed to start 2FA setup");
+    } finally {
+      setTfaLoading(false);
+    }
+  };
+
+  const handleTfaVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTfaError(null);
+    setTfaLoading(true);
+    try {
+      await verifyTwoFA(tfaToken.trim());
+      setTfaToken("");
+      setTfaEnabled(true);
+      setShowQr(false);
+    } catch (e: any) {
+      console.error(e);
+      setTfaError(e?.message ?? "Invalid 2FA code");
+    } finally {
+      setTfaLoading(false);
+    }
+  };
+
+  const handleTfaDisable = async () => {
+    if (!window.confirm("Disable two-factor authentication for this account?")) {
+      return;
+    }
+    setTfaError(null);
+    setTfaLoading(true);
+    try {
+      await disableTwoFA();
+      setTfaEnabled(false);
+      setTfaConfigUrl(null);
+      setTfaToken("");
+      setShowQr(false);
+    } catch (e: any) {
+      console.error(e);
+      setTfaError(e?.message ?? "Failed to disable 2FA");
+    } finally {
+      setTfaLoading(false);
+    }
+  };
+
+  return (
+    <>
+      {/* QR modal */}
+      {showQr && tfaConfigUrl && (
+        <ModalShell
+          title="Scan this code with your authenticator app"
+          onClose={() => setShowQr(false)}
+        >
+          <form
+            className="flex flex-col items-center gap-4"
+            onSubmit={handleTfaVerify}
+          >
+            <div className="rounded-lg border bg-white p-3">
+              <QRCodeCanvas value={tfaConfigUrl} size={220} />
+            </div>
+            {tfaSecret && (
+              <p className="text-xs text-muted-foreground text-center">
+                Of voer deze geheime sleutel handmatig in:{" "}
+                <code className="px-1 py-0.5 rounded bg-neutral-900 text-[11px]">
+                  {tfaSecret}
+                </code>
+              </p>
+            )}
+
+            <div className="w-full max-w-xs space-y-2">
+              <div className="text-xs text-muted-foreground">
+                Voer nu de 6-cijferige code van je app in om 2FA te activeren.
+              </div>
+              <Input
+                inputMode="numeric"
+                pattern="\d*"
+                maxLength={8}
+                value={tfaToken}
+                onChange={(e) => setTfaToken(e.target.value)}
+                placeholder="123456"
+                className="w-full"
+              />
+            </div>
+          
+            <div className="flex items-center gap-3">
+              <Button type="submit" size="sm" disabled={tfaLoading || !tfaToken}>
+                {tfaLoading ? "Verifiëren…" : "Code verifiëren"}
+              </Button>
+              {tfaError && (
+                <div className="text-xs text-red-600 max-w-xs text-center">
+                  {tfaError}
+                </div>
+              )}
+            </div>
+          </form>
+        </ModalShell>
+      )}
+      <Card>
+        <CardContent className="p-6 space-y-8">
+          <h2 className="text-xl font-bold mb-2">Account</h2>
+
+          {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
+          {err && <p className="text-sm text-red-600">{err}</p>}
+
+          {!loading && me && (
+            <>
+              {/* Basic info */}
+              <section className="space-y-2">
+                <h3 className="text-lg font-semibold">Profile</h3>
+                <div className="text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Email: </span>
+                    <span className="font-medium">{me.email}</span>
+                  </div>
+                  {me.last_login && (
+                    <div className="text-xs text-muted-foreground">
+                      Last login: {new Date(me.last_login).toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* Password change */}
+              <section className="space-y-3">
+                <h3 className="text-lg font-semibold">Change password</h3>
+                <form className="grid grid-cols-1 md:grid-cols-3 gap-3" onSubmit={handlePasswordChange}>
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">Current password</div>
+                    <Input
+                      type="password"
+                      value={oldPassword}
+                      onChange={(e) => setOldPassword(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">New password</div>
+                    <Input
+                      type="password"
+                      value={newPassword1}
+                      onChange={(e) => setNewPassword1(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">Repeat new password</div>
+                    <Input
+                      type="password"
+                      value={newPassword2}
+                      onChange={(e) => setNewPassword2(e.target.value)}
+                    />
+                  </div>
+                  <div className="md:col-span-3 flex items-center gap-3">
+                    <Button type="submit" disabled={pwSaving}>
+                      {pwSaving ? "Saving…" : "Update password"}
+                    </Button>
+                    {pwMsg && <span className="text-xs text-emerald-500">{pwMsg}</span>}
+                  </div>
+                </form>
+              </section>
+
+              {/* 2FA */}
+              <section className="space-y-3">
+                <h3 className="text-lg font-semibold">Two-Factor Authentication</h3>
+                <p className="text-sm text-muted-foreground">
+                  Protect your account with a TOTP authenticator app (Google Authenticator, 1Password, etc.).
+                </p>
+
+                <div className="flex flex-wrap items-center gap-3 text-sm">
+                  <span className="text-muted-foreground">Status:</span>
+                  <span
+                    className={
+                      tfaEnabled
+                        ? "font-semibold text-emerald-500"
+                        : "font-semibold text-red-500"
+                    }
+                  >
+                    {tfaEnabled ? "Enabled" : "Disabled"}
+                  </span>
+
+                  {!tfaEnabled && (
+                    <Button size="sm" onClick={startTfaSetup} disabled={tfaLoading}>
+                      {tfaLoading ? "Starting…" : "Set up 2FA"}
+                    </Button>
+                  )}
+                  {tfaEnabled && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleTfaDisable}
+                      disabled={tfaLoading}
+                    >
+                      Disable 2FA
+                    </Button>
+                  )}
+                </div>
+
+                {tfaConfigUrl && (
+                  <div className="mt-2 rounded-xl border p-3 space-y-2 text-xs">
+                    <div className="font-semibold">Setup instructions</div>
+                    <ol className="list-decimal list-inside space-y-1">
+                      <li>Click “Set up 2FA” to open the QR modal and scan the code.</li>
+                      {tfaSecret && (
+                        <li>
+                          Or enter this secret manually:{" "}
+                          <code className="px-1 py-0.5 rounded bg-neutral-900 text-[11px]">
+                            {tfaSecret}
+                          </code>
+                        </li>
+                      )}
+                    </ol>
+                  </div>
+                )}
+
+                <form className="mt-3 flex flex-wrap items-end gap-3" onSubmit={handleTfaVerify}>
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">Test / confirm a 2FA code</div>
+                    <Input
+                      inputMode="numeric"
+                      pattern="\d*"
+                      maxLength={8}
+                      value={tfaToken}
+                      onChange={(e) => setTfaToken(e.target.value)}
+                      placeholder="123456"
+                      className="w-32"
+                    />
+                  </div>
+                  <Button type="submit" size="sm" disabled={tfaLoading || !tfaToken}>
+                    Verify code
+                  </Button>
+                  {tfaError && <div className="text-xs text-red-600">{tfaError}</div>}
+                </form>
+              </section>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </>
+  );
+};
 
   const RiskSettings = () => {
     // ---- Equity state (scoped to Risk page) ----
@@ -1520,6 +1893,8 @@ export default function App() {
               </CardContent>
             </Card>
         );
+      case "account":
+        return <AccountPage />;
     }
   };
 
@@ -1535,6 +1910,7 @@ export default function App() {
             { key: "stocks", label: "Stocks" },
             { key: "risk", label: "Risk" },
             { key: "journal", label: "Journal" },
+            { key: "account", label: "Account" },
           ].map((tab) => (
             <Button
               key={tab.key}

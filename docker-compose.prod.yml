@@ -126,6 +126,28 @@ services:
       - traefik.http.routers.pgadmin.entrypoints=websecure
       - traefik.http.services.pgadmin.loadbalancer.server.port=80
 
+  mailserver:
+    image: docker.io/mailserver/docker-mailserver:latest
+    container_name: mailserver
+    hostname: mail
+    domainname: trade-journal.nl
+    env_file:
+      - .env.mailserver
+    volumes:
+      - maildata:/var/mail
+      - mailstate:/var/mail-state
+      - maillogs:/var/log/mail
+      - ./docker/mailserver/config:/tmp/docker-mailserver
+    ports:
+      - "25:25"    # SMTP (external mail servers)
+      - "587:587"  # Submission from email clients
+    networks:
+      - internal   # <-- Only this one is required
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+
 networks:
   web:
   internal:
@@ -133,3 +155,6 @@ networks:
 volumes:
   pgdata_prod:
   pgadmin_prod:
+  maildata:
+  mailstate:
+  maillogs:

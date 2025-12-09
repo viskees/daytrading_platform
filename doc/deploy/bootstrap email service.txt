@@ -1,0 +1,34 @@
+# Start mailserver + stack
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+
+# Add mailbox
+docker exec -it mailserver setup email add no-reply@trade-journal.nl "PASSWORD"
+
+# Add alias
+docker exec -it mailserver setup alias add no-reply@trade-journal.nl yourreal@example.com
+
+# List accounts
+docker exec -it mailserver setup email list
+
+# List aliases
+docker exec -it mailserver setup alias list
+
+# Generate DKIM (one-time)
+docker exec -it mailserver setup config dkim
+
+# Mailserver logs
+docker logs mailserver --tail=200
+
+# Test
+docker compose --env-file .env.prod -f docker-compose.prod.yml exec django bash
+
+cd /app/app
+python manage.py shell
+
+from django.core.mail import send_mail
+send_mail(
+    "Test from Trade Journal",
+    "SMTP OK!",
+    None,
+    ["no-reply@trade-journal.nl"],
+)

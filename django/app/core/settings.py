@@ -189,7 +189,21 @@ CSRF_TRUSTED_ORIGINS = [f"https://{h}" for h in ALLOWED_HOSTS if h != '*']
 CSRF_COOKIE_SAMESITE = "Lax"        # or "None" (requires HTTPS)
 # When using SameSite=None you must be on HTTPS everywhere
 
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+# Email / SMTP
+# In dev: override via .env.dev to use Mailpit (SMTP on mailpit:1025).
+# In prod: point these to your real SMTP server (Postfix, etc.).
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND",
+    default="django.core.mail.backends.console.EmailBackend",
+)
+EMAIL_HOST = env("EMAIL_HOST", default="localhost")
+EMAIL_PORT = env.int("EMAIL_PORT", default=25)
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=False)
+EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=False)
+DEFAULT_FROM_EMAIL = env(
+    "DEFAULT_FROM_EMAIL",
+    default="no-reply@trade-journal.local",
+)
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

@@ -26,10 +26,19 @@ export function authHeader(): Record<string, string> {
  * if a valid refresh cookie exists. Safe to skip if you only set
  * the access token at login and rely on 401 -> refresh in authedFetch.
  */
+function getCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+  return m ? decodeURIComponent(m[2]) : null;
+}
+
 export async function initAccessTokenFromRefresh(): Promise<boolean> {
   const r = await fetch("/api/auth/jwt/refresh/", {
     method: "POST",
     credentials: "include",
+    headers: {
+      "X-CSRFToken": getCookie("csrftoken") || "",
+    },
   });
   if (!r.ok) return false;
   const j = await r.json();

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Verify your Trade Journal account</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #f3f4f6;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        color: #111827;
+      }
+      .wrapper {
+        max-width: 520px;
+        margin: 24px auto;
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 24px 24px 28px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 12px;
+      }
+      p {
+        font-size: 14px;
+        line-height: 1.6;
+        margin: 0 0 12px;
+      }
+      .btn {
+        display: inline-block;
+        padding: 10px 20px;
+        margin: 12px 0;
+        border-radius: 999px;
+        background: #111827;
+        color: #ffffff !important;
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .btn:hover {
+        background: #000000;
+      }
+      .link {
+        word-break: break-all;
+        font-size: 12px;
+        color: #2563eb;
+      }
+      .footer {
+        font-size: 12px;
+        color: #6b7280;
+        margin-top: 16px;
+      }
+      .brand {
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrapper">
+      <h1>Confirm your email address</h1>
+
+      <p>Hi {{ user.email }},</p>
+
+      <p>
+        Thanks for signing up for your trading journal on
+        <span class="brand">trade-journal.nl</span>.
+      </p>
+
+      <p>
+        To activate your account, please confirm your email address by clicking
+        the button below:
+      </p>
+
+      <p>
+        <a href="{{ activation_url }}" class="btn">Confirm my email</a>
+      </p>
+
+      <p>
+        If the button above doesn't work, copy and paste this link into your
+        browser:
+      </p>
+
+      <p class="link">
+        <a href="{{ activation_url }}">{{ activation_url }}</a>
+      </p>
+
+      <p>
+        If you didn't create an account, you can safely ignore this email and no
+        changes will be made.
+      </p>
+
+      <p class="footer">
+        Happy journaling,<br />
+        The <span class="brand">Trade Journal</span> app
+      </p>
+    </div>
+  </body>
+</html>
