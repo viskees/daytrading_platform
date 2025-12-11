@@ -98,6 +98,11 @@ services:
       # no more stripPrefix; Caddy expects /static and /media
       - traefik.http.routers.static.middlewares=secure-headers@docker
       - traefik.http.services.static.loadbalancer.server.port=80
+      # NEW: just to get a cert for mail.trade-journal.nl
+      - traefik.http.routers.mail-tls.rule=Host(`mail.trade-journal.nl`)
+      - traefik.http.routers.mail-tls.entrypoints=websecure
+      - traefik.http.routers.mail-tls.tls.certresolver=letsencrypt
+      - traefik.http.routers.mail-tls.service=static
 
 
   postgres:
@@ -138,6 +143,8 @@ services:
       - mailstate:/var/mail-state
       - maillogs:/var/log/mail
       - ./docker/mailserver/config:/tmp/docker-mailserver
+      # mount Traefik's ACME store
+      - ./docker/traefik/acme/acme.json:/etc/letsencrypt/acme.json:ro
     ports:
       - "25:25"    # SMTP (external mail servers)
       - "587:587"  # Submission from email clients

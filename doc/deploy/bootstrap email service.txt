@@ -1,11 +1,11 @@
 # Start mailserver + stack
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 
-# Add mailbox
-docker exec -it mailserver setup email add no-reply@trade-journal.nl "PASSWORD"
+# Add mailbox --> heeft Django nodig om te kunnen aanmelden op de mailserver
+docker exec -it mailserver setup email add no-reply@trade-journal.nl "giffaH-mupfuh-zyvwi8"
 
 # Add alias
-docker exec -it mailserver setup alias add no-reply@trade-journal.nl yourreal@example.com
+docker exec -it mailserver setup alias add no-reply@trade-journal.nl viskees@gmail.com
 
 # List accounts
 docker exec -it mailserver setup email list
@@ -22,6 +22,10 @@ docker logs mailserver --tail=200
 # Test
 docker compose --env-file .env.prod -f docker-compose.prod.yml exec django bash
 
+# Queue
+docker exec -it mailserver postqueue -p
+docker exec -it mailserver postfix flush
+
 cd /app/app
 python manage.py shell
 
@@ -30,5 +34,11 @@ send_mail(
     "Test from Trade Journal",
     "SMTP OK!",
     None,
-    ["no-reply@trade-journal.nl"],
+    ["test-qtcopaoh5@srv1.mail-tester.com"],
 )
+
+# Firewall
+ALLOW TCP 25
+ALLOW TCP 587
+ALLOW TCP 80
+ALLOW TCP 443
