@@ -138,6 +138,9 @@ services:
     domainname: trade-journal.nl
     env_file:
       - .env.mailserver
+    environment:
+      - SSL_TYPE=letsencrypt           # 👈 use LE certs
+      - SSL_DOMAIN=mail.trade-journal.nl
     volumes:
       - maildata:/var/mail
       - mailstate:/var/mail-state
