@@ -1,3 +1,7 @@
+- forgot password @ login gui
+- nice landing page
+- feature request tab (roadmap/bugs/features --> voting)
+
 Next I want to realize a few (big) changes and new features:
 - fully multi-user
 - account section to manage your personal account, change pw, manage MFA, etc
