@@ -34,7 +34,7 @@ send_mail(
     "Test from Trade Journal",
     "SMTP OK!",
     None,
-    ["d08d2c7f+wampfdjxhbqd@inbox.ondmarc.com"],
+    ["alerts@trade-journal.nl"],
 )
 
 # Firewall
