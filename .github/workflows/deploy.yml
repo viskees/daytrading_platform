@@ -21,7 +21,7 @@ jobs:
           DEPLOY_DIR="/opt/daytrading_platform/daytrading_platform"
 
           mkdir -p "$DEPLOY_DIR"
-
+          
           rsync -av --delete \
             --exclude '.git' \
             --exclude '.github' \
@@ -30,7 +30,7 @@ jobs:
             --exclude '.env.mailserver' \
             --exclude 'docker/traefik/acme/' \
             --exclude 'django/app/media/' \
-            --exclude 'docker/mailserver/config/' \
+            --exclude 'docker/mailserver/config/' \ 
             ./ "$DEPLOY_DIR"/
 
       - name: Build frontend (SPA) via Docker

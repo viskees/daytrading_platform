@@ -5,7 +5,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 docker exec -it mailserver setup email add no-reply@trade-journal.nl "giffaH-mupfuh-zyvwi8"
 
 # Add alias
-docker exec -it mailserver setup alias add no-reply@trade-journal.nl viskees@gmail.com
+docker exec -it mailserver setup alias add alerts@trade-journal.nl viskees@gmail.com
 
 # List accounts
 docker exec -it mailserver setup email list
@@ -19,12 +19,12 @@ docker exec -it mailserver setup config dkim
 # Mailserver logs
 docker logs mailserver --tail=200
 
-# Test
-docker compose --env-file .env.prod -f docker-compose.prod.yml exec django bash
-
 # Queue
 docker exec -it mailserver postqueue -p
 docker exec -it mailserver postfix flush
+
+# Test
+docker compose --env-file .env.prod -f docker-compose.prod.yml exec django bash
 
 cd /app/app
 python manage.py shell
@@ -34,7 +34,7 @@ send_mail(
     "Test from Trade Journal",
     "SMTP OK!",
     None,
-    ["test-qtcopaoh5@srv1.mail-tester.com"],
+    ["d08d2c7f+wampfdjxhbqd@inbox.ondmarc.com"],
 )
 
 # Firewall
