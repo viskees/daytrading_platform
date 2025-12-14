@@ -2,6 +2,11 @@
 - nice landing page
 - feature request tab (roadmap/bugs/features --> voting)
 
+Rate limiting on reset requests (per IP + per email).
+	•	Always return the same response (“If that email exists…”) to avoid enumeration.
+	•	Short-ish expiry (e.g., hours) and strong password validation.
+	•	After reset: optionally invalidate existing sessions/refresh tokens (in JWT world, rotate signing key or use a blacklist/“token_version” strategy if you have refresh tokens).
+
 Next I want to realize a few (big) changes and new features:
 - fully multi-user
 - account section to manage your personal account, change pw, manage MFA, etc

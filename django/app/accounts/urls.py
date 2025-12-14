@@ -12,6 +12,8 @@ from .views import (
     TwoFactorConfirmView,
     TwoFactorDisableView,
     TwoFactorVerifyView,
+    PasswordResetRequestView,
+    PasswordResetConfirmView,
 )
 
 urlpatterns = [
@@ -28,4 +30,8 @@ urlpatterns = [
     path("2fa/confirm/", TwoFactorConfirmView.as_view(), name="twofactor-confirm"),
     path("2fa/disable/", TwoFactorDisableView.as_view(), name="twofactor-disable"),
     path("me/2fa/verify/", TwoFactorVerifyView.as_view(), name="twofactor-verify"),
+
+    # Password reset
+    path("password-reset/", PasswordResetRequestView.as_view(), name="password-reset"),
+    path("password-reset-confirm/", PasswordResetConfirmView.as_view(),name="password-reset-confirm"),
 ]

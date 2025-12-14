@@ -7,6 +7,8 @@ import ErrorPage from "./routes/ErrorPage";
 import Login from "./routes/Login";
 import Register from "./routes/Register";
 import { getTokens } from "./lib/auth";
+import ForgotPassword from "./routes/ForgotPassword";
+import ResetPassword from "./routes/ResetPassword";
 
 function requireAuth(element: JSX.Element) {
   return getTokens() ? element : <Settings />; // redirect-ish: show Settings page as landing
@@ -24,7 +26,9 @@ const routes: RouteObject[] = [
       { path: "journal", element: requireAuth(<Journal />) },
       { path: "settings", element: <Settings /> },
     ],
-  },
+   },
+   { path: "/forgot-password", element: <ForgotPassword />,},
+   { path: "/reset-password/:uid/:token", element: <ResetPassword />,},
 ];
 
 export default routes;
