@@ -1,4 +1,12 @@
 services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    networks: [internal]
+    volumes:
+      - redisdata_dev:/data
+    restart: unless-stopped
+  
   # build the SPA once; no long-lived Node
   frontend-build:
     image: node:20
@@ -116,3 +124,4 @@ networks:
 volumes:
   pgdata_dev:
   pgadmin_dev:
+  redisdata_dev:

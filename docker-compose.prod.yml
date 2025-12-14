@@ -1,4 +1,12 @@
 services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    networks: [internal]
+    volumes:
+      - redisdata_prod:/data
+    restart: unless-stopped
+
   frontend-build:
     image: node:20
     user: "${UID:-1000}:${GID:-1000}"
@@ -168,3 +176,4 @@ volumes:
   maildata:
   mailstate:
   maillogs:
+  redisdata_prod:

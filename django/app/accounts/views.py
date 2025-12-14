@@ -12,6 +12,7 @@ from django_otp.plugins.otp_totp.models import TOTPDevice
 from rest_framework import generics, permissions, serializers, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.shortcuts import render
@@ -26,6 +27,12 @@ from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.core.mail import send_mail
 from django.contrib.auth.password_validation import validate_password
+from .throttles import (
+    PasswordResetIPThrottle,
+    PasswordResetEmailThrottle,
+    PasswordResetConfirmIPThrottle,
+    PasswordResetConfirmUIDThrottle,
+)
 
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
@@ -69,6 +76,18 @@ def _send_verify_email(user, request):
     msg.attach_alternative(html_body, "text/html")
     msg.send(fail_silently=False)
 
+def blacklist_all_refresh_tokens_for_user(user):
+    """
+    Blacklist all outstanding SimpleJWT refresh tokens for a user.
+    Safe no-op if blacklist app isn't installed.
+    """
+    try:
+        from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
+    except Exception:
+        return
+
+    for token in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=token)
 
 class RegisterView(generics.CreateAPIView):
     """
@@ -381,7 +400,8 @@ class TwoFactorVerifyView(APIView):
         return Response({"detail": "Token verified."})
 
 class PasswordResetRequestView(APIView):
-    permission_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetIPThrottle, PasswordResetEmailThrottle]
 
     def post(self, request):
         email = request.data.get("email")
@@ -418,32 +438,39 @@ class PasswordResetRequestView(APIView):
     
     
 class PasswordResetConfirmView(APIView):
-    permission_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetConfirmIPThrottle, PasswordResetConfirmUIDThrottle]
 
     def post(self, request):
         uidb64 = request.data.get("uid")
         token = request.data.get("token")
         password = request.data.get("password")
 
+        # Same response on any failure
+        generic_fail = Response({"detail": "Invalid reset link."}, status=400)
+
         if not all([uidb64, token, password]):
-            return Response({"detail": "Invalid request."}, status=400)
+            return generic_fail
 
         try:
             uid = force_str(urlsafe_base64_decode(uidb64))
             user = User.objects.get(pk=uid, is_active=True)
         except (User.DoesNotExist, ValueError, TypeError):
-            return Response({"detail": "Invalid reset link."}, status=400)
+            return generic_fail
 
         if not token_generator.check_token(user, token):
-            return Response({"detail": "Invalid or expired token."}, status=400)
+            return generic_fail
 
-        # Strong password validation (Django settings)
-        validate_password(password, user)
+        try:
+            validate_password(password, user)
+        except Exception:
+            # don’t leak password policy details here
+            return generic_fail
 
         user.set_password(password)
         user.save(update_fields=["password"])
 
-        return Response(
-            {"detail": "Password has been reset successfully."},
-            status=status.HTTP_200_OK,
-        )
+        if getattr(settings, "PASSWORD_RESET_LOGOUT_ALL", True):
+            blacklist_all_refresh_tokens_for_user(user)
+
+        return Response({"detail": "Password has been reset successfully."}, status=status.HTTP_200_OK)

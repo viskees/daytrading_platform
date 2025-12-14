@@ -18,6 +18,7 @@ from rest_framework_simplejwt.token_blacklist.models import (
 )
 
 from django_otp.plugins.otp_totp.models import TOTPDevice
+from .throttles import LoginIPThrottle, LoginEmailThrottle
 
 
 import datetime
@@ -100,6 +101,7 @@ class EmailOnlyTokenSerializer(TokenObtainPairSerializer):
     
 
 class EmailOnlyTokenView(TokenObtainPairView):
+    throttle_classes = [LoginIPThrottle, LoginEmailThrottle]
     serializer_class = EmailOnlyTokenSerializer
 
 
@@ -199,17 +201,21 @@ class CookieTokenRefreshView(TokenRefreshView):
 class LogoutView(APIView):
     """
     Server-side logout:
-      - Blacklist all outstanding tokens for this user
-      - Delete the HttpOnly refresh cookie (if you're using the cookie flow)
+      - Blacklist all outstanding tokens for this user (if blacklist app is enabled)
+      - Delete the HttpOnly refresh cookie
     """
-
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # blacklist all outstanding tokens for this user (server-side logout)
-        tokens = OutstandingToken.objects.filter(user=request.user)
-        for t in tokens:
-            BlacklistedToken.objects.get_or_create(token=t)
+        try:
+            from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
+
+            tokens = OutstandingToken.objects.filter(user=request.user)
+            for t in tokens:
+                BlacklistedToken.objects.get_or_create(token=t)
+        except Exception:
+            # If blacklist app isn't installed / migrations missing, still allow logout
+            pass
 
         resp = Response({"detail": "Logged out"})
         resp.delete_cookie("refresh", path="/api/auth/jwt/")

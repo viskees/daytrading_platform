@@ -41,6 +41,35 @@ PY
 fi
 echo "Postgres is ready."
 
+# Wait for Redis (optional; only when REDIS_URL is set)
+if [ -n "${REDIS_URL:-}" ]; then
+  echo "REDIS_URL is set; waiting for Redis..."
+  python - <<'PY'
+import os, time
+from urllib.parse import urlparse
+
+u = urlparse(os.environ["REDIS_URL"])
+host = u.hostname or "redis"
+port = u.port or 6379
+db = int((u.path or "/0").lstrip("/") or "0")
+
+import redis
+
+deadline = time.time() + 30
+while True:
+    try:
+        r = redis.Redis(host=host, port=port, db=db, socket_connect_timeout=1)
+        r.ping()
+        break
+    except Exception as e:
+        if time.time() > deadline:
+            raise
+        time.sleep(1)
+print("Redis is ready.")
+PY
+fi
+
+
 # Migrate (retry a couple times just in case)
 for i in 1 2 3; do
   python "${PROJECT_DIR}/manage.py" migrate --noinput && break

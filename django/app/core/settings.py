@@ -31,6 +31,10 @@ _default_host = next((h for h in ALLOWED_HOSTS if h and h != "*"), "localhost")
 _default_scheme = "http" if ("localhost" in _default_host or _default_host.startswith("127.")) else "https"
 FRONTEND_URL = env("FRONTEND_URL", default=f"{_default_scheme}://{_default_host}")
 
+# Password reset token expiry (Django uses seconds)
+# e.g. 3 hours = 10800
+PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", "10800"))
+
 # --------------------------------------------------------------------------------------
 # Apps
 # --------------------------------------------------------------------------------------
@@ -165,16 +169,48 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.AnonRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        "user": "2000/day",
+        "user": "1000/day",
         "anon": "200/day",
-    },
+        # password reset request
+        "password_reset_ip": "5/hour",
+        "password_reset_email": "3/hour",
+        # password reset confirm (new)
+        "password_reset_confirm_ip": "20/hour",
+        "password_reset_confirm_uid": "10/hour",
 
+        # login hardening (optional but recommended)
+        "login_ip": "20/hour",
+        "login_email": "10/hour",
+    },
     "DEFAULT_FILTER_BACKENDS": [
         "django_filters.rest_framework.DjangoFilterBackend",
         "rest_framework.filters.OrderingFilter",
         "rest_framework.filters.SearchFilter",
     ],
 }
+
+# --------------------------------------------------------------------------------------
+# Cache (important for throttling to be shared across containers)
+# --------------------------------------------------------------------------------------
+# Use Redis in production if REDIS_URL is set. Safe fallback for dev.
+REDIS_URL = env("REDIS_URL", default="")
+
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+        }
+    }
+else:
+    # fallback (dev / single-container)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "local-dev",
+        }
+    }
+
 
 # --------------------------------------------------------------------------------------
 # CORS / Proxy / CSRF (needed for Traefik TLS)
@@ -216,3 +252,12 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 LOGIN_URL = "/accounts/login/"
 LOGIN_REDIRECT_URL = "/admin/"
 LOGOUT_REDIRECT_URL = "/"
+
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 12}},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+PASSWORD_RESET_LOGOUT_ALL = env.bool("PASSWORD_RESET_LOGOUT_ALL", default=True)
