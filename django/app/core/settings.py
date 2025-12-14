@@ -25,6 +25,12 @@ ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=[
     "localhost", "127.0.0.1", "admin.localhost"
 ])
 
+# Frontend base URL used in emails (password reset, activation, etc.)
+# Can be explicitly set via FRONTEND_URL in .env files.
+_default_host = next((h for h in ALLOWED_HOSTS if h and h != "*"), "localhost")
+_default_scheme = "http" if ("localhost" in _default_host or _default_host.startswith("127.")) else "https"
+FRONTEND_URL = env("FRONTEND_URL", default=f"{_default_scheme}://{_default_host}")
+
 # --------------------------------------------------------------------------------------
 # Apps
 # --------------------------------------------------------------------------------------

@@ -21,6 +21,14 @@ from .serializers import (
     TwoFactorVerifySerializer,
 )
 from .tokens import make_email_token, read_email_token
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.core.mail import send_mail
+from django.contrib.auth.password_validation import validate_password
+
+User = get_user_model()
+token_generator = PasswordResetTokenGenerator()
 
 User = get_user_model()
 
@@ -371,3 +379,71 @@ class TwoFactorVerifyView(APIView):
             )
 
         return Response({"detail": "Token verified."})
+
+class PasswordResetRequestView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        email = request.data.get("email")
+        if not email:
+            return Response({"detail": "Email is required."}, status=400)
+
+        try:
+            user = User.objects.get(email__iexact=email, is_active=True)
+        except User.DoesNotExist:
+            # IMPORTANT: basic phase still returns generic response
+            return Response(
+                {"detail": "If the email exists, a reset link has been sent."},
+                status=status.HTTP_200_OK,
+            )
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = token_generator.make_token(user)
+
+        reset_url = (
+            f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}"
+        )
+
+        send_mail(
+            subject="Reset your password",
+            message=f"Reset your password:\n\n{reset_url}",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+        )
+
+        return Response(
+            {"detail": "If the email exists, a reset link has been sent."},
+            status=status.HTTP_200_OK,
+        )
+    
+    
+class PasswordResetConfirmView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        uidb64 = request.data.get("uid")
+        token = request.data.get("token")
+        password = request.data.get("password")
+
+        if not all([uidb64, token, password]):
+            return Response({"detail": "Invalid request."}, status=400)
+
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid, is_active=True)
+        except (User.DoesNotExist, ValueError, TypeError):
+            return Response({"detail": "Invalid reset link."}, status=400)
+
+        if not token_generator.check_token(user, token):
+            return Response({"detail": "Invalid or expired token."}, status=400)
+
+        # Strong password validation (Django settings)
+        validate_password(password, user)
+
+        user.set_password(password)
+        user.save(update_fields=["password"])
+
+        return Response(
+            {"detail": "Password has been reset successfully."},
+            status=status.HTTP_200_OK,
+        )

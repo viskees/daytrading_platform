@@ -43,6 +43,7 @@ export default function Login() {
         {err && <div className="text-red-600 text-sm">{err}</div>}
       </form>
       <p className="text-sm mt-2">No account? <a className="underline" href="/register">Sign up with email</a></p>
+      <p className="mt-2 text-sm"><a href="/forgot-password" className="underline">Forgot your password?</a></p>
       <p className="text-sm mt-3">2FA will be prompted on your first login via the backend flow.</p>
     </div>
   );

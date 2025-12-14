@@ -926,28 +926,61 @@ export default function App() {
     return () => clearInterval(id);
   }, [authed, refreshDashboard]);
 
-  /* ---------- Auth Landing ---------- */
+/* ---------- Auth Landing ---------- */
 function Unauthed() {
+  type View = "login" | "forgot" | "reset";
+
+  const parsePath = (): { view: View; uid?: string; token?: string } => {
+    const p = window.location.pathname || "/";
+    if (p === "/forgot-password") return { view: "forgot" };
+
+    const m = p.match(/^\/reset-password\/([^/]+)\/([^/]+)\/?$/);
+    if (m) return { view: "reset", uid: m[1], token: m[2] };
+
+    return { view: "login" };
+  };
+
+  const [{ view, uid, token }, setRoute] = useState(parsePath);
+
+  // Keep UI in sync if user navigates browser back/forward
+  useEffect(() => {
+    const onPop = () => setRoute(parsePath());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const go = (to: string) => {
+    window.history.pushState({}, "", to);
+    setRoute(parsePath());
+  };
+
+  // Existing login/register state
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mfaCode, setMfaCode] = useState(""); // 👈 NEW
+  const [mfaCode, setMfaCode] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [registerMsg, setRegisterMsg] = useState<string | null>(null); // 👈 NEW
+  const [registerMsg, setRegisterMsg] = useState<string | null>(null);
+
+  // Forgot/reset state
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotDoneMsg, setForgotDoneMsg] = useState<string | null>(null);
+
+  const [newPw1, setNewPw1] = useState("");
+  const [newPw2, setNewPw2] = useState("");
+  const [resetDoneMsg, setResetDoneMsg] = useState<string | null>(null);
 
   const doLogin = async () => {
     setErr(null);
+    setRegisterMsg(null);
     setLoading(true);
     try {
       await apiLogin(email, password, mfaCode || undefined);
       setAuthed(true);
     } catch (e: any) {
       const msg = String(e?.message ?? "Login failed");
-      // Optional: surface nicer message if backend mentions 2FA
       if (msg.toLowerCase().includes("otp") || msg.toLowerCase().includes("2fa")) {
-        setErr(
-          "This account requires a 2FA code. Please enter the 6-digit code from your authenticator app."
-        );
+        setErr("This account requires a 2FA code. Please enter the 6-digit code from your authenticator app.");
       } else {
         setErr(msg);
       }
@@ -961,7 +994,6 @@ function Unauthed() {
     setRegisterMsg(null);
     setLoading(true);
     try {
-      // Create account but DO NOT auto-login; activation email must be used first
       await apiRegister(email, password);
       setRegisterMsg(
         `We have sent an activation link to ${email}. ` +
@@ -969,6 +1001,71 @@ function Unauthed() {
       );
     } catch (e: any) {
       setErr(e?.message ?? "Register failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const doForgot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    setForgotDoneMsg(null);
+    setLoading(true);
+    try {
+      const r = await fetch("/api/auth/password-reset/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: forgotEmail }),
+      });
+
+      // Phase 1: keep it simple. Backend returns 200 even if email doesn't exist.
+      if (!r.ok) {
+        const data = await r.json().catch(() => null);
+        setErr(data?.detail || "Failed to request password reset.");
+        return;
+      }
+
+      setForgotDoneMsg("If the email exists, a reset link has been sent.");
+    } catch {
+      setErr("Network error. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const doReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    setResetDoneMsg(null);
+
+    if (!uid || !token) {
+      setErr("Invalid reset link.");
+      return;
+    }
+    if (!newPw1 || newPw1 !== newPw2) {
+      setErr("Passwords do not match.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const r = await fetch("/api/auth/password-reset-confirm/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid, token, password: newPw1 }),
+      });
+
+      if (!r.ok) {
+        const data = await r.json().catch(() => null);
+        setErr(data?.detail || "Failed to reset password.");
+        return;
+      }
+
+      setResetDoneMsg("Password has been reset successfully. You can now log in.");
+      setNewPw1("");
+      setNewPw2("");
+    } catch {
+      setErr("Network error. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -984,7 +1081,11 @@ function Unauthed() {
       <Card>
         <CardContent className="p-6 space-y-4">
           <div className="flex items-center justify-between">
-            <h1 className="text-xl font-bold">Login</h1>
+            <h1 className="text-xl font-bold">
+              {view === "login" && "Login"}
+              {view === "forgot" && "Reset password"}
+              {view === "reset" && "Choose a new password"}
+            </h1>
             <div className="flex items-center gap-2 text-sm">
               <span>Dark mode</span>
               <Switch checked={dark} onCheckedChange={setDark} />
@@ -992,64 +1093,144 @@ function Unauthed() {
           </div>
 
           <p className="text-sm text-muted-foreground">
-            Please register or log in to access the trading app.
+            {view === "login" && "Please register or log in to access the trading app."}
+            {view === "forgot" && "Enter your email and we’ll send you a password reset link."}
+            {view === "reset" && "Enter a new password for your account."}
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* FORM STARTS HERE */}
-            <form className="space-y-2" onSubmit={handleSubmit}>
-              <div className="text-sm font-medium">Email</div>
-              <Input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                autoComplete="email"
-                disabled={loading}
-              />
-
-              <div className="text-sm font-medium">Password</div>
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                autoComplete="current-password"
-                disabled={loading}
-              />
-
-              {/* MFA code (optional for users without 2FA, required by backend for users with 2FA) */}
-              <div className="text-sm font-medium mt-2">2FA code (if enabled)</div>
-              <Input
-                type="text"
-                inputMode="numeric"
-                pattern="\d*"
-                value={mfaCode}
-                onChange={(e) => setMfaCode(e.target.value)}
-                placeholder="123456"
-                disabled={loading}
-              />
-
-              <div className="flex gap-2 mt-3">
-                <Button type="submit" disabled={loading}>
-                  Log in
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={doRegister}
+            {/* LOGIN VIEW */}
+            {view === "login" && (
+              <form className="space-y-2" onSubmit={handleSubmit}>
+                <div className="text-sm font-medium">Email</div>
+                <Input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
                   disabled={loading}
-                >
-                  Register
-                </Button>
-              </div>
+                />
 
-              {err && <div className="text-red-600 text-sm mt-2">{err}</div>}
-              {registerMsg && (
-                <div className="text-emerald-600 text-xs mt-2">{registerMsg}</div>
-              )}
-            </form>
-            {/* FORM ENDS HERE */}
+                <div className="text-sm font-medium">Password</div>
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  disabled={loading}
+                />
+
+                <div className="text-sm font-medium mt-2">2FA code (if enabled)</div>
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="\d*"
+                  value={mfaCode}
+                  onChange={(e) => setMfaCode(e.target.value)}
+                  placeholder="123456"
+                  disabled={loading}
+                />
+
+                {/* ✅ This is the link you were missing (and it WILL be visible) */}
+                <div className="text-sm text-right">
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => go("/forgot-password")}
+                  >
+                    Forgot your password?
+                  </button>
+                </div>
+
+                <div className="flex gap-2 mt-3">
+                  <Button type="submit" disabled={loading}>
+                    Log in
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={doRegister}
+                    disabled={loading}
+                  >
+                    Register
+                  </Button>
+                </div>
+
+                {err && <div className="text-red-600 text-sm mt-2">{err}</div>}
+                {registerMsg && (
+                  <div className="text-emerald-600 text-xs mt-2">{registerMsg}</div>
+                )}
+              </form>
+            )}
+
+            {/* FORGOT VIEW */}
+            {view === "forgot" && (
+              <form className="space-y-3" onSubmit={doForgot}>
+                <div className="text-sm font-medium">Email</div>
+                <Input
+                  type="email"
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  disabled={loading}
+                  required
+                />
+
+                <div className="flex gap-2">
+                  <Button type="submit" disabled={loading || !forgotEmail}>
+                    Send reset link
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => go("/")}>
+                    Back to login
+                  </Button>
+                </div>
+
+                {forgotDoneMsg && (
+                  <div className="text-emerald-600 text-sm">{forgotDoneMsg}</div>
+                )}
+                {err && <div className="text-red-600 text-sm">{err}</div>}
+              </form>
+            )}
+
+            {/* RESET VIEW */}
+            {view === "reset" && (
+              <form className="space-y-3" onSubmit={doReset}>
+                <div className="text-sm font-medium">New password</div>
+                <Input
+                  type="password"
+                  value={newPw1}
+                  onChange={(e) => setNewPw1(e.target.value)}
+                  disabled={loading}
+                  required
+                />
+
+                <div className="text-sm font-medium">Repeat new password</div>
+                <Input
+                  type="password"
+                  value={newPw2}
+                  onChange={(e) => setNewPw2(e.target.value)}
+                  disabled={loading}
+                  required
+                />
+
+                <div className="flex gap-2">
+                  <Button type="submit" disabled={loading || !newPw1 || !newPw2}>
+                    Reset password
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => go("/")}>
+                    Back to login
+                  </Button>
+                </div>
+
+                {resetDoneMsg && (
+                  <div className="text-emerald-600 text-sm">{resetDoneMsg}</div>
+                )}
+                {err && <div className="text-red-600 text-sm">{err}</div>}
+              </form>
+            )}
           </div>
         </CardContent>
       </Card>
