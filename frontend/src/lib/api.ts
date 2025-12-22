@@ -818,3 +818,31 @@ export async function changePassword(payload: ChangePasswordPayload): Promise<vo
     throw new Error(await res.text());
   }
 }
+
+/* ----------------------------------------------------------------------
+   Legacy default export adapter (for older route files importing `api`)
+   Keeps build compatibility while we gradually migrate callers to apiFetch().
+------------------------------------------------------------------------ */
+const api = {
+  get: (path: string, opts: RequestInit = {}) =>
+    apiFetch(path, { ...opts, method: "GET" }),
+
+  post: (path: string, data?: unknown, opts: RequestInit = {}) =>
+    apiFetch(path, {
+      ...opts,
+      method: "POST",
+      body: data === undefined ? undefined : JSON.stringify(data),
+    }),
+
+  patch: (path: string, data?: unknown, opts: RequestInit = {}) =>
+    apiFetch(path, {
+      ...opts,
+      method: "PATCH",
+      body: data === undefined ? undefined : JSON.stringify(data),
+    }),
+
+  delete: (path: string, opts: RequestInit = {}) =>
+    apiFetch(path, { ...opts, method: "DELETE" }),
+};
+
+export default api;

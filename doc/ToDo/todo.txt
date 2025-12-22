@@ -1,66 +1,128 @@
-- forgot password @ login gui
-- nice landing page
-- feature request tab (roadmap/bugs/features --> voting)
-
-Rate limiting on reset requests (per IP + per email).
-	•	Always return the same response (“If that email exists…”) to avoid enumeration.
-	•	Short-ish expiry (e.g., hours) and strong password validation.
-	•	After reset: optionally invalidate existing sessions/refresh tokens (in JWT world, rotate signing key or use a blacklist/“token_version” strategy if you have refresh tokens).
-
-Next I want to realize a few (big) changes and new features:
-- fully multi-user
-- account section to manage your personal account, change pw, manage MFA, etc
-- email integration for user registration, pw reset, etc
-- friendly user landing page, with a text section where I can explain the site, manageble via the admin interface
-- the landing page also shows the best trade ever and the best trade of the day
-- feature request page (everybody can add feature request on which others can vote)- visible for all users section and a roadmap section which only myself can edit via the admin interface
-- the dasboard has several modals, but I want them to be vertical alligned. Next to this I want the logged in user to be able to expand and collaps modals and change the order of the modals
-- integrated community chat
+roadmap
+- stocks tab becomes watchlist
+- feature request; devided in bugs, roadmap and feature requests - end-users can report bugs and propose feature requests with a voting system
 
 
-Gaps / things to polish
-	•	No true “multi-tenant” concept (which is fine): all users share one global instance. If later you want organizations/teams, that’s extra work, but for simple multi-user you’re basically done.
-	•	A few localStorage helpers (e.g. LAST_EQUITY_KEY in App.tsx) are not keyed by user, so if two users share a browser profile they’d leak that local value. Not security-critical, but worth keying by user.id.
-	•	Frontend structure is in between:
-	•	App.tsx is a tabbed SPA (Dashboard / Stocks / Risk / Journal / Account).
-	•	There is also a newer react-router setup in routes.tsx (with RootLayout, Journal, Settings, Login, Register).
-	•	For multi-user clarity, you’ll probably want to fully commit to the router-based layout and treat App.tsx as “dashboard page”, not the whole app.
+## user friendly landing page
+Break it into 6 small chunks (each can be one PR)
 
-Verdict: multi-user isolation and auth are already solid. “Fully multi-user” is mostly cleanup and UX rather than backend changes.
+1) Public vs Auth routing split (frontend-only)
 
-What’s missing / to tidy up
-	•	Routing consistency: currently, routes.tsx does not expose /account – it only has /, /journal, /settings. Account is only reachable via the internal tabs in App.tsx. You’ll likely want a proper /account route.
-	•	Duplicate implementations: you have AccountPage inside App.tsx and another Account.tsx in pages/. You should consolidate these into one canonical component.
-	•	There’s no UI to edit display name / profile details (even though the register serializer can set first_name/display_name).
-	•	No explicit UI for deleting account or other privacy settings (if you ever want that).
+Goal: / becomes a real landing page (public), and /app becomes the authenticated app root.
+Deliverables
+	•	New route/page: LandingPage
+	•	Update requireAuth() logic so it redirects to /login (instead of falling back to Settings)
+	•	Add /app route that renders a new Dashboard (placeholder for now)
 
-Verdict: account + password change + MFA are already implemented, just not fully cleaned up / routed nicely.
+Success criteria
+	•	Logged out → see landing on /
+	•	Logged in → /app works
+	•	No backend changes yet
 
-What’s missing
-	•	No password reset flow yet:
-	•	There is no serializer / view / endpoint to request a reset email (e.g. /api/auth/password-reset/) or confirm it with a token.
-	•	No frontend UI for “Forgot your password?”.
-	•	Production email config:
-	•	.env.prod currently has no EMAIL_HOST, EMAIL_PORT, DEFAULT_FROM_EMAIL, etc, so in prod it will fall back to localhost:25, which is unlikely to work on your VPS.
-	•	You’ll need to add SMTP settings (Mailgun, Postmark, SES, etc) for production.
-	•	Email templates are currently very basic plain text (subject and single line “Click to verify: …”).
+⸻
 
-Verdict: Registration email verification is done and wired. Password reset + production SMTP config are the big missing pieces.
+2) Add UserProfile with nickname + privacy fields (backend-only)
 
-TL;DR status per roadmap item
-	•	✅ Fully multi-user (backend & auth) – implemented and secure; just some UX and cleanup (e.g. localStorage per user, clearer routing).
-	•	✅ / 🔧 Account section with password change + MFA – implemented in both backend and App’s AccountPage, needs consolidation and routing polish.
-	•	✅ / ⛔ Email integration
-	•	Registration + email verification: ✅
-	•	Password reset + production SMTP config: ⛔ not yet built.
-	•	⛔ Friendly landing page + admin-editable text + best trades – not yet implemented; currently you land directly into the app/login.
-	•	⛔ Feature request + voting + roadmap – nothing built yet.
-	•	🔧 Dashboard widgets – present and strong, but static; expand/collapse + reordering + persistence still to be designed.
-	•	⛔ Community chat – not started; no models, no WebSockets, no UI.
+Goal: stop exposing email as identity; allow a public nickname.
+Deliverables
+	•	UserProfile model + signals + admin registration
+	•	API endpoint: GET/PATCH /api/auth/me/ includes profile.nickname and updates it
+	•	Migration
 
-If you like, next step I can propose a concrete implementation order and rough schema/API for:
-	1.	Landing page content + best trade endpoints, then
-	2.	Feature request + votes,
-	3.	Password reset flow,
-	4.	Dashboard layout persistence,
-	5.	Chat architecture.
+Success criteria
+	•	You can edit nickname via API
+	•	Nickname persists
+	•	Still no best-trade logic yet
+
+⸻
+
+3) Account UI (frontend-only)
+
+Goal: nickname editable in your existing “account/settings” area.
+Deliverables
+	•	Add nickname input + “show on leaderboards” toggle
+	•	PATCH /api/auth/me/
+
+Success criteria
+	•	UI saves nickname + toggle
+	•	No email shown anywhere except account screen
+
+⸻
+
+4) Make trades queryable for “best trade” (backend-only)
+
+Goal: best trade endpoints should be efficient/consistent.
+Deliverables
+	•	Add stored fields on Trade: realized_pnl_value (+ optional r_multiple_value)
+	•	Ensure value computed on close/save
+	•	Data migration to backfill existing trades
+
+Success criteria
+	•	DB contains realized PnL numbers for closed trades
+
+⸻
+
+5) Best trades API (backend-only)
+
+Goal: single endpoint for dashboard + landing.
+Deliverables
+	•	GET /api/stats/best-trades/
+	•	Returns { best_today, best_ever } with nickname only (no email)
+	•	Permission rules:
+	•	Authenticated version includes more detail (optional)
+	•	Public version shows limited fields (recommended)
+
+Success criteria
+	•	Endpoint returns correct results
+	•	No emails leak in JSON
+
+⸻
+
+6) CMS landing page content (backend + frontend)
+
+Goal: editable landing page via /admin (simple CMS).
+Deliverables
+	•	LandingPage singleton model + admin
+	•	GET /api/site/landing/
+	•	Landing page fetches and renders content
+	•	Optional: landing shows best trade tiles
+
+Success criteria
+	•	Content editable in admin
+	•	Landing updates without redeploy
+
+⸻
+
+Answer: show “best trade today/ever” on public landing too?
+
+Yes, it can be appealing, but only if you do it in a privacy-safe, marketing-safe way.
+
+Recommended approach
+	•	Show on landing: ✅ Yes, but in “teaser mode”
+	•	show nickname (or “Anonymous”)
+	•	show ticker and PnL (optional)
+	•	hide exact timestamps, strategy tags, notes, screenshots
+	•	Show on dashboard: ✅ Yes, full detail (still no emails)
+
+Why this is the best compromise
+	•	Landing gets a “social proof / excitement” element
+	•	You avoid leaking trading behavior or personal identifiers
+	•	You keep the dashboard as the “real” experience after login
+
+One extra safeguard I’d add
+
+Add show_on_leaderboards (opt-out) and only include trades where this is true.
+
+⸻
+
+How to ask me for the “exact diffs” in a manageable way
+
+Instead of asking for everything at once, ask like this:
+	1.	“Generate the exact diffs for Chunk 1 (routing split) based on the zip.”
+	2.	Then: “Now generate diffs for Chunk 2 (UserProfile + /auth/me).”
+	3.	Repeat.
+
+This guarantees:
+	•	diffs stay small
+	•	you can test after each chunk
+	•	rollback is easy

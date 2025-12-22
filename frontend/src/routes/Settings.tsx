@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { API } from "../lib/api";
+import { fetchUserSettings, saveTheme } from "../lib/api";
 import { getTokens } from "../lib/auth";
 
 export default function Settings() {
@@ -8,13 +8,18 @@ export default function Settings() {
 
   useEffect(() => {
     if (!loggedIn) return;
-    API.get("/user/settings/").then(([s]) => setDark(!!s.dark_mode)).catch(()=>{});
+      fetchUserSettings()
+      .then((s) => {
+        if (!s) return;
+        setDark(!!s.dark_mode);
+      })
+      .catch(() => {});
   }, [loggedIn]);
 
   async function toggleDark(v: boolean) {
     setDark(v);
     if (loggedIn) {
-      await API.patch("/user/settings/0/", { dark_mode: v }).catch(()=>{});
+      await saveTheme(v ? "dark" : "light").catch(() => {});
     }
     // Still update DOM theme immediately (your App.tsx already handles theme toggle)
     document.documentElement.classList.toggle("dark", v);
