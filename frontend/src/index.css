@@ -1,34 +1,90 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
 
-/* Dark mode is toggled via the `dark` class on <html> */
-:root { color-scheme: light dark; }
-html, body, #root { height: 100%; }
+ @tailwind base;
+ @tailwind components;
+ @tailwind utilities;
 
-/* Pick ONE palette; here we use zinc */
-body { @apply bg-zinc-50 text-zinc-900; }
-.dark body { @apply bg-zinc-950 text-zinc-50; }
+/* ---------------------------------------------------------------------
+   UI system
+   - Dark mode toggled via the `dark` class on <html>
+   - Semantic design tokens (Tailwind) configured in tailwind.config.js
+   - components/ui/* uses these tokens (border-input, bg-background, ...)
+------------------------------------------------------------------------ */
 
-/* Small design tokens (optional) */
+:root {
+  color-scheme: light dark;
+  --radius: 1rem;
+
+  /* Light */
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5% 64.9%;
+
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+}
+
+.dark {
+  /* Dark */
+  --background: 240 10% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 240 10% 3.9%;
+  --card-foreground: 0 0% 98%;
+  --border: 240 3.7% 15.9%;
+  --input: 240 3.7% 15.9%;
+  --ring: 240 4.9% 83.9%;
+
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --accent: 240 3.7% 15.9%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground; }
+}
+
+/* ---------------------------------------------------------------------
+   Legacy utility classes used across the app.
+   Keep them so pages/components remain stable while we migrate to
+   components/ui/* everywhere.
+------------------------------------------------------------------------ */
+
 .container { @apply max-w-7xl mx-auto px-4; }
-.card { @apply rounded-2xl border border-zinc-200/60 dark:border-zinc-800/60 bg-white dark:bg-zinc-900 shadow-sm; }
-.card-header { @apply p-4 border-b border-zinc-200/60 dark:border-zinc-800/60; }
+
+.card { @apply rounded-2xl border bg-card text-card-foreground shadow-sm; }
+.card-header { @apply p-4 border-b; }
 .card-title { @apply font-semibold; }
 .card-content { @apply p-4; }
-.btn { @apply inline-flex items-center gap-2 rounded-2xl border border-zinc-300/60 dark:border-zinc-700/60 px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800; }
-.btn-ghost { @apply border-transparent hover:bg-transparent; }
-.input { @apply w-full rounded-xl border border-zinc-300/60 dark:border-zinc-700/60 bg-transparent px-3 py-2; }
-.label { @apply text-sm font-medium text-zinc-700 dark:text-zinc-300; }
-.select { @apply w-full rounded-xl border border-zinc-300/60 dark:border-zinc-700/60 bg-transparent px-3 py-2; }
-.textarea { @apply w-full rounded-xl border border-zinc-300/60 dark:border-zinc-700/60 bg-transparent px-3 py-2; }
-.tabs-list { @apply inline-flex gap-2 rounded-2xl border border-zinc-200/60 dark:border-zinc-800/60 p-1; }
-.tab-trigger { @apply px-3 py-1.5 rounded-xl text-sm; }
-.tab-trigger-active { @apply bg-zinc-200/60 dark:bg-zinc-800/60; }
-.badge { @apply inline-flex items-center rounded-xl text-xs px-2 py-1 border border-zinc-300/60 dark:border-zinc-700/60; }
 
-/* Utility aliases used in the mockup */
-@layer utilities {
-  .text-muted-foreground { @apply text-zinc-500 dark:text-zinc-400; }
-  .bg-muted { @apply bg-zinc-100 dark:bg-zinc-900; }
-}
+.btn { @apply inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm hover:bg-muted; }
+.btn-ghost { @apply border-transparent hover:bg-transparent; }
+
+.input { @apply w-full rounded-xl border border-input bg-transparent px-3 py-2; }
+.label { @apply text-sm font-medium text-muted-foreground; }
+.select { @apply w-full rounded-xl border border-input bg-transparent px-3 py-2; }
+.textarea { @apply w-full rounded-xl border border-input bg-transparent px-3 py-2; }
+
+.tabs-list { @apply inline-flex gap-2 rounded-2xl border p-1; }
+.tab-trigger { @apply px-3 py-1.5 rounded-xl text-sm; }
+.tab-trigger-active { @apply bg-muted; }
+.badge { @apply inline-flex items-center rounded-xl text-xs px-2 py-1 border; }

@@ -11,6 +11,13 @@ export function getAccessToken(): string | null {
   return ACCESS_TOKEN;
 }
 
+// Backwards compatible helper for older callers
+// (some parts of the app still use getTokens() to mean "am I logged in?")
+export function getTokens(): string | null {
+  return getAccessToken();
+}
+
+
 export function clearAuth() {
   ACCESS_TOKEN = null;
 }
