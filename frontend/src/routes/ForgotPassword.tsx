@@ -10,10 +10,9 @@ export default function ForgotPassword() {
   const [dark, setDark] = useState<boolean>(getInitialDark());
 
   const [email, setEmail] = useState("");
-  const [loading, setLoading] = useState(false);
-
   const [doneMsg, setDoneMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     setTheme(dark);
@@ -24,7 +23,6 @@ export default function ForgotPassword() {
     setErr(null);
     setDoneMsg(null);
     setLoading(true);
-
     try {
       const r = await fetch("/api/auth/password-reset/", {
         method: "POST",
@@ -32,7 +30,7 @@ export default function ForgotPassword() {
         body: JSON.stringify({ email }),
       });
 
-      // Backend commonly returns 200 even if email doesn't exist.
+      // Backend typically returns 200 even when email doesn't exist (privacy).
       if (!r.ok) {
         const data = await r.json().catch(() => null);
         setErr(data?.detail || "Failed to request password reset.");
@@ -67,12 +65,12 @@ export default function ForgotPassword() {
             <div className="text-sm font-medium">Email</div>
             <Input
               type="email"
+              required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
               autoComplete="email"
               disabled={loading}
-              required
             />
 
             <div className="flex gap-2">

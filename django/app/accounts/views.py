@@ -19,6 +19,7 @@ from django.shortcuts import render
 
 from .serializers import (
     RegisterSerializer,
+    MeSerializer,
     TwoFactorVerifySerializer,
 )
 from .tokens import make_email_token, read_email_token
@@ -178,32 +179,18 @@ def verify_email(request):
 # ----------------------------------------------------------------------
 # Me + password change
 # ----------------------------------------------------------------------
-class MeSerializer(serializers.ModelSerializer):
-    """Minimal serializer for the currently logged-in user."""
-
-    class Meta:
-        model = User
-        fields = (
-            "id",
-            "email",
-            "first_name",
-            "last_name",
-            "is_staff",
-            "is_active",
-            "date_joined",
-            "last_login",
-        )
 
 
-class MeView(generics.RetrieveAPIView):
-    """
-    GET /api/auth/me/
-    """
-    serializer_class = MeSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_object(self):
-        return self.request.user
+class MeView(generics.RetrieveUpdateAPIView):
+     """
+     GET  /api/auth/me/
+     PATCH /api/auth/me/   (update first_name/last_name)
+     """
+     serializer_class = MeSerializer
+     permission_classes = [IsAuthenticated]
+ 
+     def get_object(self):
+         return self.request.user
 
 
 class PasswordChangeView(generics.GenericAPIView):
