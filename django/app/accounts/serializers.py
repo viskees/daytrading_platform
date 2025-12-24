@@ -1,6 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
 User = get_user_model()
@@ -91,13 +92,29 @@ class RegisterSerializer(serializers.Serializer):
 
 
 class MeSerializer(serializers.ModelSerializer):
-    """
-    Minimal serializer for the /api/auth/me/ endpoint.
-    """
-
-    class Meta:
+     """
+     Minimal serializer for the /api/auth/me/ endpoint.
+     """
+ 
+     class Meta:
         model = User
-        fields = ("id", "email", "last_login")
+        # Editable display fields:
+        # - first_name is your "display name" (you already set it during registration)
+        fields = (
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "last_login",
+        )
+        read_only_fields = ("id", "email", "last_login")
+
+     def validate_first_name(self, value: str):
+        # optional: keep it sane; adjust limits as you like
+        v = (value or "").strip()
+        if len(v) > 150:
+            raise serializers.ValidationError(_("Display name is too long."))
+        return v
 
 
 class PasswordChangeSerializer(serializers.Serializer):

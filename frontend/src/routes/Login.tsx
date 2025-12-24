@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,18 +7,22 @@ import { Switch } from "@/components/ui/switch";
 import { getInitialDark, setTheme } from "@/lib/theme";
 import { login as apiLogin } from "@/lib/api";
 
+type LocationState = {
+  from?: string | { pathname?: string };
+  registered?: boolean;
+  registeredEmail?: string;
+};
+
 export default function Login() {
   const navigate = useNavigate();
-  const location = useLocation() as any;
+  const location = useLocation() as unknown as { state?: LocationState };
+
   const registered = !!location?.state?.registered;
   const registeredEmail = String(location?.state?.registeredEmail ?? "");
 
-  // Registration success banner is shown when redirected from /register
-  // via navigate("/login", { state: { registered: true, registeredEmail } })
-
   const [dark, setDark] = useState<boolean>(getInitialDark());
 
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(() => registeredEmail);
   const [password, setPassword] = useState("");
   const [mfaCode, setMfaCode] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -28,10 +32,12 @@ export default function Login() {
     setTheme(dark);
   }, [dark]);
 
-  const afterLoginPath =
-    (location?.state?.from && typeof location.state.from === "string"
-      ? location.state.from
-      : location?.state?.from?.pathname) || "/app";
+  const afterLoginPath = useMemo(() => {
+    const from = location?.state?.from;
+    if (typeof from === "string") return from;
+    if (from && typeof from === "object" && typeof from.pathname === "string") return from.pathname;
+    return "/app";
+  }, [location?.state?.from]);
 
   const doLogin = async () => {
     setErr(null);
@@ -41,7 +47,12 @@ export default function Login() {
       navigate(afterLoginPath, { replace: true });
     } catch (e: any) {
       const msg = String(e?.message ?? "Login failed");
-      setErr(msg);
+      // slightly friendlier 2FA hint if backend mentions it
+      if (msg.toLowerCase().includes("otp") || msg.toLowerCase().includes("2fa")) {
+        setErr("This account requires a 2FA code. Please enter the 6-digit code from your authenticator app.");
+      } else {
+        setErr(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -67,12 +78,14 @@ export default function Login() {
           <p className="text-sm text-muted-foreground">
             Please log in to access the trading app.
           </p>
+
           {registered && (
             <div className="text-emerald-600 text-sm">
               Account created{registeredEmail ? ` for ${registeredEmail}` : ""}. Please check your email and click the
               activation link to complete registration before logging in.
             </div>
           )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <form className="space-y-2" onSubmit={handleSubmit}>
               <div className="text-sm font-medium">Email</div>
@@ -83,6 +96,7 @@ export default function Login() {
                 placeholder="you@example.com"
                 autoComplete="email"
                 disabled={loading}
+                required
               />
 
               <div className="text-sm font-medium">Password</div>
@@ -93,6 +107,7 @@ export default function Login() {
                 placeholder="••••••••"
                 autoComplete="current-password"
                 disabled={loading}
+                required
               />
 
               <div className="text-sm font-medium mt-2">2FA code (if enabled)</div>

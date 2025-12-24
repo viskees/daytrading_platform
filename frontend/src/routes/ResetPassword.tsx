@@ -11,12 +11,12 @@ export default function ResetPassword() {
 
   const [dark, setDark] = useState<boolean>(getInitialDark());
 
-  const [newPw1, setNewPw1] = useState("");
-  const [newPw2, setNewPw2] = useState("");
+  const [pw1, setPw1] = useState("");
+  const [pw2, setPw2] = useState("");
 
-  const [loading, setLoading] = useState(false);
   const [doneMsg, setDoneMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     setTheme(dark);
@@ -31,7 +31,7 @@ export default function ResetPassword() {
       setErr("Invalid reset link.");
       return;
     }
-    if (!newPw1 || newPw1 !== newPw2) {
+    if (!pw1 || pw1 !== pw2) {
       setErr("Passwords do not match.");
       return;
     }
@@ -41,7 +41,7 @@ export default function ResetPassword() {
       const r = await fetch("/api/auth/password-reset-confirm/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid, token, password: newPw1 }),
+        body: JSON.stringify({ uid, token, password: pw1 }),
       });
 
       if (!r.ok) {
@@ -50,9 +50,9 @@ export default function ResetPassword() {
         return;
       }
 
-      setDoneMsg("Password has been reset successfully. You can now log in.");
-      setNewPw1("");
-      setNewPw2("");
+      setDoneMsg("Password reset successful. You may now log in.");
+      setPw1("");
+      setPw2("");
     } catch {
       setErr("Network error. Please try again.");
     } finally {
@@ -73,32 +73,32 @@ export default function ResetPassword() {
           </div>
 
           <p className="text-sm text-muted-foreground">
-            Enter a new password for your account.
+            Enter your new password below.
           </p>
 
           <form className="space-y-3" onSubmit={submit}>
             <div className="text-sm font-medium">New password</div>
             <Input
               type="password"
-              value={newPw1}
-              onChange={(e) => setNewPw1(e.target.value)}
-              autoComplete="new-password"
-              disabled={loading}
               required
+              value={pw1}
+              onChange={(e) => setPw1(e.target.value)}
+              disabled={loading}
+              autoComplete="new-password"
             />
 
             <div className="text-sm font-medium">Repeat new password</div>
             <Input
               type="password"
-              value={newPw2}
-              onChange={(e) => setNewPw2(e.target.value)}
-              autoComplete="new-password"
-              disabled={loading}
               required
+              value={pw2}
+              onChange={(e) => setPw2(e.target.value)}
+              disabled={loading}
+              autoComplete="new-password"
             />
 
             <div className="flex gap-2">
-              <Button type="submit" disabled={loading || !newPw1 || !newPw2}>
+              <Button type="submit" disabled={loading || !pw1 || !pw2}>
                 {loading ? "Resetting…" : "Reset password"}
               </Button>
 
