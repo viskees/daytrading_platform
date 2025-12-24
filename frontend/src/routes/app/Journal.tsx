@@ -1,5 +1,5 @@
 import { Card, CardContent } from "@/components/ui/card";
-import JournalDashboard from "@/pages/JournalDashboard";
+import JournalDashboard from "@/components/journal/JournalDashboard";
 
 export default function Journal() {
   return (

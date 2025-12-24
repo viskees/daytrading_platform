@@ -21,7 +21,7 @@ import { QRCodeCanvas } from "qrcode.react";
 
 import TradesCalendar from "@/components/Calendar";
 import TradeEditor from "@/components/TradeEditor";
-import JournalDashboard from "@/pages/JournalDashboard";
+import JournalDashboard from "@/components/journal/JournalDashboard";
 
 import { hasStoredTheme } from "@/lib/theme";
 import { apiFetch } from "@/lib/api";

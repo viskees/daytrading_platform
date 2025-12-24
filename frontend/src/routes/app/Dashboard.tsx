@@ -23,7 +23,7 @@ import {
 } from "@/lib/api";
 import { getInitialDark, hasStoredTheme, setTheme } from "@/lib/theme";
 import { onTradeClosed, emitTradeClosed } from "@/lib/events";
-import JournalDashboard from "@/pages/JournalDashboard";
+import JournalDashboard from "@/components/journal/JournalDashboard";
 import TradeEditor from "@/components/TradeEditor";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
