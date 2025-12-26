@@ -1,0 +1,73 @@
+Cool — Option 1 it is: single column, collapsible, plus drag-to-reorder.
+
+Here’s the upgrade broken into manageable parts with safe checkpoints (so we don’t accidentally break existing dashboard behavior).
+
+Part 1 — Single column + collapsible panels (no drag yet)
+
+Goal: Make the dashboard a vertical stack where each widget can be opened/closed.
+
+Work items
+	•	Introduce a small DashboardPanel wrapper component (header + toggle + body).
+	•	Replace the current grid layout in Dashboard.tsx with a single flex flex-col gap-4 stack.
+	•	Keep the content components exactly as-is (Risk, Account, Session, Open Trades, Calendar). Only wrap them.
+	•	Store open/closed state in local component state.
+	•	Persist open/closed state to localStorage (temporary; this is just to prove UX).
+
+Done means
+	•	You can collapse/expand each panel.
+	•	Refresh keeps open/closed state.
+	•	No backend changes.
+
+✅ Safe checkpoint: frontend-only, minimal risk.
+
+⸻
+
+Part 2 — Drag & drop reorder (still frontend only)
+
+Goal: End-user can reorder panels by dragging.
+
+Work items
+	•	Add @dnd-kit/core + @dnd-kit/sortable.
+	•	Treat the dashboard panel list as an ordered array of IDs.
+	•	Use a drag handle in the panel header.
+	•	Persist the order to localStorage (same key/schema as Part 1).
+
+Done means
+	•	Dragging changes the order immediately.
+	•	Refresh keeps the order.
+
+✅ Safe checkpoint: still frontend-only.
+
+⸻
+
+Part 3 — Persist layout per user (backend)
+
+Goal: Layout is saved per user account (not per browser).
+
+Work items
+	•	Add dashboard_layout JSONField to UserSettings.
+	•	Expose it via the existing UserSettingsSerializer.
+	•	Allow GET/PATCH through your existing “settings/me” endpoint.
+
+✅ Safe checkpoint: additive DB field only.
+
+⸻
+
+Part 4 — Wire frontend to backend (per-user state)
+
+Goal: On login, dashboard loads saved layout; any change saves back.
+
+Work items
+	•	On dashboard mount: fetch user settings and apply dashboard_layout.
+	•	On layout change: debounce PATCH (e.g., 600ms) to settings/me.
+	•	Validate layout data (unknown IDs ignored, missing panels appended).
+
+✅ Safe checkpoint: graceful fallback to defaults if API fails.
+
+⸻
+
+Part 5 — Polish + safety
+	•	“Reset layout” button
+	•	“Collapse all / Expand all”
+	•	Layout schema versioning (version: 1)
+	•	Add new widgets safely without breaking existing user layouts

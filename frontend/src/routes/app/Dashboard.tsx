@@ -27,6 +27,7 @@ import JournalDashboard from "@/components/journal/JournalDashboard";
 import TradeEditor from "@/components/TradeEditor";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import DashboardPanel from "@/components/dashboard/DashboardPanel";
 
 type RiskPolicy = {
   maxRiskPerTradePct: number;
@@ -71,6 +72,55 @@ type DaySummary = {
 
 const LAST_EQUITY_KEY = "equity_last_known";
 const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "Range", "News"];
+
+type DashboardWidgetId = "risk" | "account" | "session" | "openTrades" | "calendar";
+type DashboardWidgetState = { id: DashboardWidgetId; open: boolean };
+
+const DASHBOARD_LAYOUT_KEY = "dashboard_layout_v1";
+
+const DEFAULT_DASHBOARD_LAYOUT: DashboardWidgetState[] = [
+  { id: "risk", open: true },
+  { id: "account", open: true },
+  { id: "session", open: true },
+  { id: "openTrades", open: true },
+  { id: "calendar", open: true },
+];
+
+const PANEL_TITLES: Record<DashboardWidgetId, string> = {
+  risk: "Risk",
+  account: "Account",
+  session: "Session statistics",
+  openTrades: "Open trades",
+  calendar: "Calendar",
+};
+
+function normalizeDashboardLayout(input: unknown): DashboardWidgetState[] {
+  const byId = new Map<DashboardWidgetId, DashboardWidgetState>();
+
+  for (const d of DEFAULT_DASHBOARD_LAYOUT) byId.set(d.id, { ...d });
+
+  if (Array.isArray(input)) {
+    for (const raw of input) {
+      if (!raw || typeof raw !== "object") continue;
+      const obj = raw as any;
+      const id = obj.id as DashboardWidgetId;
+      if (!byId.has(id)) continue;
+      byId.set(id, { id, open: typeof obj.open === "boolean" ? obj.open : true });
+    }
+
+    // Preserve incoming order for known ids; append any missing defaults at end
+    const ordered: DashboardWidgetState[] = [];
+    for (const raw of input) {
+      const id = (raw as any)?.id as DashboardWidgetId;
+      if (byId.has(id)) ordered.push(byId.get(id)!);
+      byId.delete(id);
+    }
+    for (const remaining of byId.values()) ordered.push(remaining);
+    return ordered;
+  }
+
+  return DEFAULT_DASHBOARD_LAYOUT;
+}
 
 function calcUsedPctOfBudget(usedDailyRiskPct: number, maxDailyLossPct: number): number {
   if (!isFinite(usedDailyRiskPct) || !isFinite(maxDailyLossPct) || maxDailyLossPct <= 0) return 0;
@@ -355,6 +405,27 @@ export default function Dashboard() {
   const [risk, setRisk] = useState<RiskPolicy>({ maxRiskPerTradePct: 1, maxDailyLossPct: 3, maxTradesPerDay: 6 });
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
   const [calendarKick, setCalendarKick] = useState(0);
+
+  const [dashboardLayout, setDashboardLayout] = useState<DashboardWidgetState[]>(() => {
+    try {
+      const stored = localStorage.getItem(DASHBOARD_LAYOUT_KEY);
+      return stored ? normalizeDashboardLayout(JSON.parse(stored)) : DEFAULT_DASHBOARD_LAYOUT;
+    } catch {
+      return DEFAULT_DASHBOARD_LAYOUT;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DASHBOARD_LAYOUT_KEY, JSON.stringify(dashboardLayout));
+    } catch {
+      // ignore storage errors
+    }
+  }, [dashboardLayout]);
+
+  const togglePanel = (id: DashboardWidgetId) => {
+    setDashboardLayout((prev) => prev.map((p) => (p.id === id ? { ...p, open: !p.open } : p)));
+  };
 
   const [todaysPL, setTodaysPL] = useState(0);
   const [totalPL, setTotalPL] = useState(0);
@@ -696,25 +767,78 @@ export default function Dashboard() {
 
   return (
     <>
-      <div className="space-y-4">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2 space-y-4">
-            <RiskSummary />
-            <AccountSummary />
-            <SessionStats />
-          </div>
-          <div className="space-y-4">
-            <OpenTrades />
-          </div>
-        </div>
+      <div className="flex flex-col gap-4">
+        {dashboardLayout.map((p) => {
+          if (p.id === "risk") {
+            return (
+              <DashboardPanel
+                key={p.id}
+                title={PANEL_TITLES[p.id]}
+                isOpen={p.open}
+                onToggle={() => togglePanel(p.id)}
+              >
+                <RiskSummary />
+              </DashboardPanel>
+            );
+          }
 
-        <TradesCalendar
-          refreshToken={calendarKick}
-          dayStartEquity={dayStartEquity}
-          maxDailyLossPct={risk.maxDailyLossPct}
-          getMonthSummaries={getMonthSummaries}
-          getDayTrades={getDayTrades}
-        />
+          if (p.id === "account") {
+            return (
+              <DashboardPanel
+                key={p.id}
+                title={PANEL_TITLES[p.id]}
+                isOpen={p.open}
+                onToggle={() => togglePanel(p.id)}
+              >
+                <AccountSummary />
+              </DashboardPanel>
+            );
+          }
+
+          if (p.id === "session") {
+            return (
+              <DashboardPanel
+                key={p.id}
+                title={PANEL_TITLES[p.id]}
+                isOpen={p.open}
+                onToggle={() => togglePanel(p.id)}
+              >
+                <SessionStats />
+              </DashboardPanel>
+            );
+          }
+
+          if (p.id === "openTrades") {
+            return (
+              <DashboardPanel
+                key={p.id}
+                title={PANEL_TITLES[p.id]}
+                isOpen={p.open}
+                onToggle={() => togglePanel(p.id)}
+              >
+                <OpenTrades />
+              </DashboardPanel>
+            );
+          }
+
+          // calendar
+          return (
+            <DashboardPanel
+              key={p.id}
+              title={PANEL_TITLES[p.id]}
+              isOpen={p.open}
+              onToggle={() => togglePanel(p.id)}
+            >
+              <TradesCalendar
+                refreshToken={calendarKick}
+                dayStartEquity={dayStartEquity}
+                maxDailyLossPct={risk.maxDailyLossPct}
+                getMonthSummaries={getMonthSummaries}
+                getDayTrades={getDayTrades}
+              />
+            </DashboardPanel>
+          );
+        })}
       </div>
 
       {showNew && (
