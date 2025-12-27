@@ -27,6 +27,27 @@ import JournalDashboard from "@/components/journal/JournalDashboard";
 import TradeEditor from "@/components/TradeEditor";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import DashboardPanel from "@/components/dashboard/DashboardPanel";
+
+import {
+  DndContext,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+
+import {
+  SortableContext,
+  useSortable,
+  arrayMove,
+  verticalListSortingStrategy,
+  sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
+
+import { CSS } from "@dnd-kit/utilities";
 
 type RiskPolicy = {
   maxRiskPerTradePct: number;
@@ -71,6 +92,93 @@ type DaySummary = {
 
 const LAST_EQUITY_KEY = "equity_last_known";
 const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "Range", "News"];
+
+type DashboardWidgetId = "risk" | "account" | "session" | "openTrades" | "calendar";
+type DashboardWidgetState = { id: DashboardWidgetId; open: boolean };
+
+const DASHBOARD_LAYOUT_KEY = "dashboard_layout_v1";
+
+const DEFAULT_DASHBOARD_LAYOUT: DashboardWidgetState[] = [
+  { id: "risk", open: true },
+  { id: "account", open: true },
+  { id: "session", open: true },
+  { id: "openTrades", open: true },
+  { id: "calendar", open: true },
+];
+
+const PANEL_TITLES: Record<DashboardWidgetId, string> = {
+  risk: "Risk",
+  account: "Account",
+  session: "Session statistics",
+  openTrades: "Open trades",
+  calendar: "Calendar",
+};
+
+function normalizeDashboardLayout(input: unknown): DashboardWidgetState[] {
+  const byId = new Map<DashboardWidgetId, DashboardWidgetState>();
+
+  for (const d of DEFAULT_DASHBOARD_LAYOUT) byId.set(d.id, { ...d });
+
+  if (Array.isArray(input)) {
+    for (const raw of input) {
+      if (!raw || typeof raw !== "object") continue;
+      const obj = raw as any;
+      const id = obj.id as DashboardWidgetId;
+      if (!byId.has(id)) continue;
+      byId.set(id, { id, open: typeof obj.open === "boolean" ? obj.open : true });
+    }
+
+    // Preserve incoming order for known ids; append any missing defaults at end
+    const ordered: DashboardWidgetState[] = [];
+    for (const raw of input) {
+      const id = (raw as any)?.id as DashboardWidgetId;
+      if (byId.has(id)) ordered.push(byId.get(id)!);
+      byId.delete(id);
+    }
+    for (const remaining of byId.values()) ordered.push(remaining);
+    return ordered;
+  }
+
+  return DEFAULT_DASHBOARD_LAYOUT;
+}
+
+function SortableDashboardItem({
+  id,
+  title,
+  isOpen,
+  onToggle,
+  children,
+}: {
+  id: string;
+  title: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <DashboardPanel
+        title={title}
+        isOpen={isOpen}
+        onToggle={onToggle}
+        dragHandleProps={{
+          ...attributes,
+          ...listeners,
+        }}
+      >
+        {children}
+      </DashboardPanel>
+    </div>
+  );
+}
 
 function calcUsedPctOfBudget(usedDailyRiskPct: number, maxDailyLossPct: number): number {
   if (!isFinite(usedDailyRiskPct) || !isFinite(maxDailyLossPct) || maxDailyLossPct <= 0) return 0;
@@ -154,7 +262,7 @@ function NewTradeDialog({
   onCreated, onClose, kpiError,
   perTradeCap$, dailyRemaining$, guardsEnabled
 }: {
-  onCreated: (t: Trade) => void;
+  onCreated: (t: Trade) => void | Promise<void>;
   onClose: () => void;
   kpiError?: string | null;
   guardsEnabled: boolean;
@@ -168,6 +276,8 @@ function NewTradeDialog({
   const [target, setTarget] = useState<number | "">("");
   const [size, setSize] = useState<number | "">("");
   const [notes, setNotes] = useState("");
+  const [entryEmotion, setEntryEmotion] = useState<"NEUTRAL" | "BIASED">("NEUTRAL");
+  const [entryEmotionNote, setEntryEmotionNote] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [shots, setShots] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
@@ -217,11 +327,13 @@ function NewTradeDialog({
         size: size ? Number(size) : undefined,
         notes,
         strategyTags: tags,
+        entryEmotion,
+        entryEmotionNote,
       });
 
       for (const f of shots) await apiCreateAttachment(trade.id, f);
 
-      onCreated(trade);
+      await Promise.resolve(onCreated(trade));
       onClose();
     } catch (e: any) {
       setErr(String(e?.message ?? "Create trade failed"));
@@ -280,6 +392,35 @@ function NewTradeDialog({
         </div>
 
         <div className="md:col-span-3">
+          <div className="text-xs mb-1">Entry emotion</div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={entryEmotion === "NEUTRAL" ? "default" : "outline"}
+              onClick={() => setEntryEmotion("NEUTRAL")}
+            >
+              Neutral
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={entryEmotion === "BIASED" ? "default" : "outline"}
+              onClick={() => setEntryEmotion("BIASED")}
+            >
+              Biased
+            </Button>
+          </div>
+
+          <div className="mt-2 text-xs mb-1">Entry emotion note (optional)</div>
+          <Input
+            value={entryEmotionNote}
+            onChange={(e) => setEntryEmotionNote(e.target.value)}
+            placeholder="e.g. FOMO, revenge, must-make-money…"
+          />
+        </div>
+
+        <div className="md:col-span-3">
           <div className="text-xs mb-1">Notes</div>
           <Textarea value={notes} onChange={e => setNotes(e.target.value)} className="h-24" />
         </div>
@@ -307,18 +448,33 @@ function NewTradeDialog({
 }
 
 function CloseTradeDialog({
-  trade, onClosed, onClose
-}: { trade: Trade; onClosed: (id: string) => void; onClose: () => void }) {
+  trade,
+  onClosed,
+  onClose,
+}: {
+  trade: Trade;
+  onClosed: (id: string) => void;
+  onClose: () => void;
+}) {
   const [exitPrice, setExitPrice] = useState<number | "">("");
   const [notes, setNotes] = useState(trade.notes ?? "");
+  const [exitEmotion, setExitEmotion] = useState<"NEUTRAL" | "BIASED">("NEUTRAL");
+  const [exitEmotionNote, setExitEmotionNote] = useState("");
   const [shots, setShots] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
     setSaving(true);
     try {
-      await apiCloseTrade(trade.id, { exitPrice: exitPrice ? Number(exitPrice) : undefined, notes });
+      await apiCloseTrade(trade.id, {
+        exitPrice: exitPrice ? Number(exitPrice) : undefined,
+        notes,
+        exitEmotion,
+        exitEmotionNote,
+      });
+
       for (const f of shots) await apiCreateAttachment(trade.id, f);
+
       emitTradeClosed({ tradeId: trade.id });
       onClosed(String(trade.id));
       onClose();
@@ -332,20 +488,59 @@ function CloseTradeDialog({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <div className="text-xs mb-1">Exit price</div>
-          <Input type="number" value={exitPrice} onChange={e => setExitPrice(e.target.value ? Number(e.target.value) : "")} />
+          <Input
+            type="number"
+            value={exitPrice}
+            onChange={(e) => setExitPrice(e.target.value ? Number(e.target.value) : "")}
+          />
         </div>
+
+        <div className="md:col-span-2">
+          <div className="text-xs mb-1">Exit emotion</div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={exitEmotion === "NEUTRAL" ? "default" : "outline"}
+              onClick={() => setExitEmotion("NEUTRAL")}
+            >
+              Neutral
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={exitEmotion === "BIASED" ? "default" : "outline"}
+              onClick={() => setExitEmotion("BIASED")}
+            >
+              Biased
+            </Button>
+          </div>
+
+          <div className="mt-2 text-xs mb-1">Exit emotion note (optional)</div>
+          <Input
+            value={exitEmotionNote}
+            onChange={(e) => setExitEmotionNote(e.target.value)}
+            placeholder="e.g. panic sell, hesitated, took profit too early…"
+          />
+        </div>
+
         <div className="md:col-span-2">
           <div className="text-xs mb-1">Notes</div>
-          <Textarea value={notes} onChange={e => setNotes(e.target.value)} className="h-24" />
+          <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="h-24" />
         </div>
+
         <div className="md:col-span-2">
           <ImagePasteDrop files={shots} setFiles={setShots} label="Click or paste exit screenshot (Ctrl/Cmd+V)" />
         </div>
       </div>
 
       <div className="mt-4 flex justify-end gap-2">
-        <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button onClick={submit} disabled={saving}>Close trade</Button>
+        <Button variant="outline" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button onClick={submit} disabled={saving || !exitPrice}>
+          Close trade
+        </Button>
       </div>
     </ModalShell>
   );
@@ -355,6 +550,45 @@ export default function Dashboard() {
   const [risk, setRisk] = useState<RiskPolicy>({ maxRiskPerTradePct: 1, maxDailyLossPct: 3, maxTradesPerDay: 6 });
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
   const [calendarKick, setCalendarKick] = useState(0);
+
+  const [dashboardLayout, setDashboardLayout] = useState<DashboardWidgetState[]>(() => {
+    try {
+      const stored = localStorage.getItem(DASHBOARD_LAYOUT_KEY);
+      return stored ? normalizeDashboardLayout(JSON.parse(stored)) : DEFAULT_DASHBOARD_LAYOUT;
+    } catch {
+      return DEFAULT_DASHBOARD_LAYOUT;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DASHBOARD_LAYOUT_KEY, JSON.stringify(dashboardLayout));
+    } catch {
+      // ignore storage errors
+    }
+  }, [dashboardLayout]);
+
+  const togglePanel = (id: DashboardWidgetId) => {
+    setDashboardLayout((prev) => prev.map((p) => (p.id === id ? { ...p, open: !p.open } : p)));
+  };
+
+    const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over) return;
+    if (active.id === over.id) return;
+
+    setDashboardLayout((prev) => {
+      const oldIndex = prev.findIndex((p) => p.id === active.id);
+      const newIndex = prev.findIndex((p) => p.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+  };
 
   const [todaysPL, setTodaysPL] = useState(0);
   const [totalPL, setTotalPL] = useState(0);
@@ -541,6 +775,7 @@ export default function Dashboard() {
 
   const [showNew, setShowNew] = useState(false);
   const [closing, setClosing] = useState<Trade | null>(null);
+  const [editing, setEditing] = useState<Trade | null>(null);
 
   const RiskSummary = () => (
     <Card>
@@ -680,8 +915,11 @@ export default function Dashboard() {
                     </div>
                   </td>
                   <td className="py-2 pr-2">
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setEditing(t)}>Edit</Button>
                     <Button size="sm" variant="outline" onClick={() => setClosing(t)}>Close</Button>
-                  </td>
+                  </div>
+                </td>
                 </tr>
               ))}
               {openTrades.length === 0 && (
@@ -696,26 +934,95 @@ export default function Dashboard() {
 
   return (
     <>
-      <div className="space-y-4">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2 space-y-4">
-            <RiskSummary />
-            <AccountSummary />
-            <SessionStats />
-          </div>
-          <div className="space-y-4">
-            <OpenTrades />
-          </div>
-        </div>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <SortableContext
+          items={dashboardLayout.map((p) => p.id)}
+          strategy={verticalListSortingStrategy}
+        >
+          <div className="flex flex-col gap-4">
+            {dashboardLayout.map((p) => {
+              if (p.id === "risk") {
+                return (
+                  <SortableDashboardItem
+                    key={p.id}
+                    id={p.id}
+                    title={PANEL_TITLES[p.id]}
+                    isOpen={p.open}
+                    onToggle={() => togglePanel(p.id)}
+                  >
+                    <RiskSummary />
+                  </SortableDashboardItem>
+                );
+              }
 
-        <TradesCalendar
-          refreshToken={calendarKick}
-          dayStartEquity={dayStartEquity}
-          maxDailyLossPct={risk.maxDailyLossPct}
-          getMonthSummaries={getMonthSummaries}
-          getDayTrades={getDayTrades}
-        />
-      </div>
+              if (p.id === "account") {
+                return (
+                  <SortableDashboardItem
+                    key={p.id}
+                    id={p.id}
+                    title={PANEL_TITLES[p.id]}
+                    isOpen={p.open}
+                    onToggle={() => togglePanel(p.id)}
+                  >
+                    <AccountSummary />
+                  </SortableDashboardItem>
+                );
+              }
+
+              if (p.id === "session") {
+                return (
+                  <SortableDashboardItem
+                    key={p.id}
+                    id={p.id}
+                    title={PANEL_TITLES[p.id]}
+                    isOpen={p.open}
+                    onToggle={() => togglePanel(p.id)}
+                  >
+                    <SessionStats />
+                  </SortableDashboardItem>
+                );
+              }
+
+              if (p.id === "openTrades") {
+                return (
+                  <SortableDashboardItem
+                    key={p.id}
+                    id={p.id}
+                    title={PANEL_TITLES[p.id]}
+                    isOpen={p.open}
+                    onToggle={() => togglePanel(p.id)}
+                  >
+                    <OpenTrades />
+                  </SortableDashboardItem>
+                );
+              }
+
+              // calendar
+              return (
+                <SortableDashboardItem
+                  key={p.id}
+                  id={p.id}
+                  title={PANEL_TITLES[p.id]}
+                  isOpen={p.open}
+                  onToggle={() => togglePanel(p.id)}
+                >
+                  <TradesCalendar
+                    refreshToken={calendarKick}
+                    dayStartEquity={dayStartEquity}
+                    maxDailyLossPct={risk.maxDailyLossPct}
+                    getMonthSummaries={getMonthSummaries}
+                    getDayTrades={getDayTrades}
+                  />
+                </SortableDashboardItem>
+              );
+            })}
+          </div>
+        </SortableContext>
+      </DndContext>
 
       {showNew && (
         <NewTradeDialog
@@ -740,6 +1047,43 @@ export default function Dashboard() {
           onClose={() => setClosing(null)}
           onClosed={(id) => {
             setOpenTrades(prev => prev.filter(t => String(t.id) !== String(id)));
+            void refreshDashboard();
+          }}
+        />
+      )}
+
+      {editing && (
+        <TradeEditor
+          mode="edit"
+          initial={{
+            id: Number(editing.id),
+            ticker: editing.ticker,
+            side: editing.side,
+            entryPrice: editing.entryPrice,
+            stopLoss: editing.stopLoss ?? null,
+            target: editing.target ?? null,
+            size: editing.size ?? 1,
+            notes: editing.notes ?? "",
+            strategyTags: editing.strategyTags ?? [],
+          }}
+          onClose={() => setEditing(null)}
+          onSubmit={async (values) => {
+            await updateTrade(values.id as any, {
+              ticker: values.ticker,
+              side: values.side,
+              entryPrice: Number(values.entryPrice),
+              stopLoss: values.stopLoss ?? null,
+              target: values.target ?? null,
+              size: Number(values.size),
+              notes: values.notes ?? "",
+              strategyTags: values.strategyTags ?? [],
+            });
+
+            // refresh open trades table after saving
+            try {
+              const fresh = await apiFetchOpenTrades();
+              setOpenTrades(Array.isArray(fresh) ? (fresh as Trade[]) : []);
+            } catch {}
             void refreshDashboard();
           }}
         />

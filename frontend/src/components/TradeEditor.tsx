@@ -22,7 +22,9 @@ const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "Ran
 
 
 export default function TradeEditor({ mode, initial = {}, onSubmit, onClose }: Props) {
+  const isEdit = mode === "edit";
   const [form, setForm] = useState({
+    id: initial.id,
     ticker: initial.ticker ?? "",
     side: initial.side ?? "LONG",
     entryPrice: initial.entryPrice ?? 0,
@@ -56,12 +58,14 @@ export default function TradeEditor({ mode, initial = {}, onSubmit, onClose }: P
           <label className="text-sm opacity-80">
             Ticker
             <input className="w-full mt-1 bg-black/30 rounded px-2 py-1"
-                   value={form.ticker} onChange={update("ticker")} />
+                   value={form.ticker} onChange={update("ticker")}
+                   disabled={isEdit} />
           </label>
           <label className="text-sm opacity-80">
             Side
             <select className="w-full mt-1 bg-black/30 rounded px-2 py-1"
-                    value={form.side} onChange={update("side")}>
+                    value={form.side} onChange={update("side")}
+                    disabled={isEdit}>
               <option value="LONG">LONG</option>
               <option value="SHORT">SHORT</option>
             </select>
@@ -69,12 +73,14 @@ export default function TradeEditor({ mode, initial = {}, onSubmit, onClose }: P
           <label className="text-sm opacity-80">
             Entry
             <input type="number" step="0.01" className="w-full mt-1 bg-black/30 rounded px-2 py-1"
-                   value={form.entryPrice} onChange={e=>update("entryPrice")(Number(e.target.value))} />
+                   value={form.entryPrice} onChange={e=>update("entryPrice")(Number(e.target.value))}
+                   disabled={isEdit} />
           </label>
           <label className="text-sm opacity-80">
             Size
             <input type="number" step="1" className="w-full mt-1 bg-black/30 rounded px-2 py-1"
-                   value={form.size} onChange={e=>update("size")(Number(e.target.value))} />
+                   value={form.size} onChange={e=>update("size")(Number(e.target.value))}
+                   disabled={isEdit} />
           </label>
           <label className="text-sm opacity-80">
             Stop
