@@ -35,6 +35,9 @@ from .throttles import (
     PasswordResetConfirmUIDThrottle,
 )
 
+from notifications.dispatcher import emit
+from notifications import events
+
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
 
@@ -100,12 +103,22 @@ class RegisterView(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         user = serializer.save()
-        # Optioneel: user pas actief nadat e-mail is bevestigd.
-        # Laat dit staan zoals je RegisterSerializer het nu doet.
+    
+        # Notify admin (internal)
+        emit(
+            events.USER_REGISTERED,
+            {
+                "user_id": user.id,
+                "email": getattr(user, "email", ""),
+                "created_at": getattr(user, "date_joined", ""),
+            },
+            request=self.request,
+        )
+    
+        # Existing behavior: send verify email
         try:
             _send_verify_email(user, self.request)
         except Exception:
-            # In dev niet crashen als mail niet lukt.
             pass
 
 

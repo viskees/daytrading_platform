@@ -11,9 +11,9 @@ import ResetPassword from "./routes/ResetPassword";
 
 import AppLayout from "./routes/AppLayout";
 import Dashboard from "./routes/app/Dashboard";
-import Stocks from "./routes/app/Stocks";
 import Risk from "./routes/app/Risk";
 import Journal from "./routes/app/Journal";
+import Feedback from "./routes/app/Feedback";
 import Account from "./routes/app/Account";
 
 import { getTokens } from "@/lib/auth";
@@ -48,9 +48,9 @@ const routes: RouteObject[] = [
         ),
         children: [
           { index: true, element: <Dashboard /> },
-          { path: "stocks", element: <Stocks /> },
           { path: "risk", element: <Risk /> },
           { path: "journal", element: <Journal /> },
+          { path: "feedback", element: <Feedback /> },
           { path: "account", element: <Account /> },
 
           // Catch-all under /app

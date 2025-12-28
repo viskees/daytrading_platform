@@ -30,9 +30,9 @@ export default function AppLayout() {
           <div className="flex flex-wrap gap-2">
             {[
               { to: "/app", label: "Dashboard", end: true },
-              { to: "/app/stocks", label: "Stocks" },
               { to: "/app/risk", label: "Risk" },
               { to: "/app/journal", label: "Journal" },
+              { to: "/app/feedback", label: "Feedback" },
               { to: "/app/account", label: "Account" },
             ].map((tab) => (
               <NavLink
