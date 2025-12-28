@@ -6,6 +6,9 @@ from .models import FeatureRequest, FeatureVote, RoadmapItem, BugReport
 from .serializers import FeatureRequestSerializer, RoadmapItemSerializer, BugReportSerializer
 from .permissions import IsOwnerOrAdmin
 
+from notifications.dispatcher import emit
+from notifications import events
+
 
 class FeatureRequestViewSet(viewsets.ModelViewSet):
     serializer_class = FeatureRequestSerializer
@@ -15,7 +18,18 @@ class FeatureRequestViewSet(viewsets.ModelViewSet):
         return FeatureRequest.objects.all().order_by("-created_at", "-id")
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        feature = serializer.save(created_by=self.request.user)
+
+        emit(
+            events.FEATURE_CREATED,
+            {
+                "feature_id": feature.id,
+                "title": feature.title,
+                "created_by_id": self.request.user.id,
+                "created_at": getattr(feature, "created_at", ""),
+            },
+            request=self.request,
+        )
 
     @action(detail=True, methods=["post", "delete"])
     def vote(self, request, pk=None):
@@ -54,4 +68,15 @@ class BugReportViewSet(viewsets.ModelViewSet):
         return BugReport.objects.all()
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        bug = serializer.save(created_by=self.request.user)
+    
+        emit(
+            events.BUG_CREATED,
+            {
+                "bug_id": bug.id,
+                "title": bug.title,
+                "created_by_id": self.request.user.id,
+                "created_at": getattr(bug, "created_at", ""),
+            },
+            request=self.request,
+        )

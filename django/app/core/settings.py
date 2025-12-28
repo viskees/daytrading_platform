@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     'journal',
     'accounts',
     'feedback',
+    'notifications.apps.NotificationsConfig',
 
     # DRF
     'rest_framework_simplejwt.token_blacklist',
@@ -247,6 +248,7 @@ DEFAULT_FROM_EMAIL = env(
     "DEFAULT_FROM_EMAIL",
     default="no-reply@trade-journal.local",
 )
+ADMIN_NOTIFY_EMAIL = env("ADMIN_NOTIFY_EMAIL", default="")
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
