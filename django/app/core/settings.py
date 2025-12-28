@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     # Local
     'journal',
     'accounts',
+    'feedback',
 
     # DRF
     'rest_framework_simplejwt.token_blacklist',
