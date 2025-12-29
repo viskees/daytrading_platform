@@ -63,7 +63,7 @@ urlpatterns = [
     # SPA fallback
     # Do not swallow admin, api, static/media, or pgadmin with the SPA fallback
     re_path(
-        r"^(?!admin/|accounts/login/|api/|pgadmin/|static/|media/).*$",
+        r"^(?!admin/|accounts/login/|api/|static/|media/).*$",
         spa,
         name="spa",
     ),

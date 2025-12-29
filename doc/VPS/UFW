@@ -1,0 +1,9 @@
+185  sudo ufw delete allow 443/tcp
+  186  sudo ufw delete allow 443/tcp6 
+  187  sudo ufw delete allow 443/tcp6
+  188  sudo ufw status numbered
+  189  sudo ufw allow from 143.179.120.136 to any port 443 proto tcp
+  190  sudo ufw status numbered
+  191  sudo ufw status verbose
+  192  sudo ufw reload
+  193  sudo ufw status verbose
