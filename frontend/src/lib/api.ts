@@ -557,16 +557,19 @@ export async function closeTrade(
   const hasStrategy = Array.isArray(payload.strategyTags);
   const strategy_tag_ids = hasStrategy ? await mapTagNamesToIds(payload.strategyTags) : undefined;
 
-  const res = await apiFetch(`/journal/trades/${id}/`, {
-    method: "PATCH",
+  // IMPORTANT:
+  // Use the canonical close endpoint so overnight trades are re-attached
+  // to the JournalDay of the exit (close) date.
+  const res = await apiFetch(`/journal/trades/${id}/close/`, {
+    method: "POST",
     body: JSON.stringify({
-      status: "CLOSED",
       exit_price: payload.exitPrice,
       notes: payload.notes ?? "",
       ...(hasStrategy ? { strategy_tag_ids: strategy_tag_ids ?? [] } : {}),
       exit_emotion: payload.exitEmotion ?? null,
       exit_emotion_note: payload.exitEmotionNote ?? "",
-      exit_time: payload.exitTime ?? new Date().toISOString(),
+      // allow caller to set explicit exit time; otherwise server sets now
+      ...(payload.exitTime ? { exit_time: payload.exitTime } : {}),
     }),
   });
   const json: ApiTrade = await res.json();

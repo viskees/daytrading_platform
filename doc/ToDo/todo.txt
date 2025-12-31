@@ -1,4 +1,7 @@
 roadmap
 - stocks tab becomes watchlist
-- feature request; devided in bugs, roadmap and feature requests - end-users can report bugs and propose feature requests with a voting system
 - scale in and out of a trade; on open trade panel, actions column
+- total market capital when opening a trade (<5000k --> low commission?)
+- commission field in risk settings
+- commission field when opening a trade
+- trade overnight - visible on the journal calendar (on closing date), but is not registered nor is it listed. session stats and account summary is not updated on the closure date as well
