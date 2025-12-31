@@ -44,6 +44,8 @@ from .serializers import (
     AccountAdjustmentSerializer,
 )
 
+from .services import get_or_create_journal_day_with_carry
+
 
 class Conflict(APIException):
     status_code = status.HTTP_409_CONFLICT
@@ -140,7 +142,7 @@ class JournalDayViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Forbidden")
 
         # Lock past days to keep audit story clean
-        if instance.date != now().date():
+        if instance.date != timezone.localdate():
             return Response(
                 {
                     "code": "LOCKED_DAY",
@@ -173,28 +175,8 @@ class JournalDayViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         date = serializer.validated_data["date"]
 
-        # Create-or-return the day row
-        obj, created = JournalDay.objects.get_or_create(user=request.user, date=date)
-
-        # If it's a freshly created day, auto-carry forward the last day’s equity
-        if created:
-            # previous day strictly before the requested date
-            prev = (
-                JournalDay.objects.filter(user=request.user, date__lt=date)
-                .order_by("-date")
-                .first()
-            )
-            if prev and (obj.day_start_equity is None or float(obj.day_start_equity) == 0.0):
-                # Prefer an explicit day_end_equity; else use effective_equity fallback
-                if prev.day_end_equity is not None:
-                    carry = float(prev.day_end_equity)
-                else:
-                    try:
-                        carry = float(prev.effective_equity)
-                    except Exception:
-                        carry = float(prev.day_start_equity or 0.0)
-                obj.day_start_equity = carry
-                obj.save(update_fields=["day_start_equity"])
+        # Create-or-return the day row (with carry-forward equity if created)
+        obj, created = get_or_create_journal_day_with_carry(request.user, date)
 
         ser = self.get_serializer(obj)
         data = ser.data | {"existing": (not created)}
@@ -362,7 +344,7 @@ class TradeViewSet(viewsets.ModelViewSet):
         Dashboard widget: risk usage + session stats for the current JournalDay.
         Returns: {trades, win_rate, avg_r, best_r, worst_r, daily_loss_pct, used_daily_risk_pct}
         """
-        today = now().date()
+        today = timezone.localdate()
         day = JournalDay.objects.filter(user=request.user, date=today).first()
         if not day:
             return Response(
@@ -433,7 +415,7 @@ class TradeViewSet(viewsets.ModelViewSet):
         }
         """
         user = request.user
-        today = now().date()
+        today = timezone.localdate()
         day = JournalDay.objects.filter(user=user, date=today).first()
 
         # Realized P/L today = sum over CLOSED trades for today's JournalDay
@@ -485,32 +467,24 @@ class TradeViewSet(viewsets.ModelViewSet):
         if trade.user_id != request.user.id:
             raise PermissionDenied("Forbidden")
 
-        exit_price = request.data.get("exit_price")
-        if exit_price is None:
+        # We keep this endpoint as the canonical way to close a trade.
+        # It accepts optional fields (notes, strategy_tag_ids, exit_emotion, exit_time, ...)
+        # and re-attaches the trade to the JournalDay of the local exit date.
+
+        if request.data.get("exit_price", None) in (None, ""):
             return Response(
-                {
-                    "code": "VALIDATION_ERROR",
-                    "detail": "exit_price is required",
-                },
+                {"code": "VALIDATION_ERROR", "detail": "exit_price is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        trade.exit_price = exit_price
-        # Guarantee exit_time + CLOSED status
-        if not trade.exit_time:
-            trade.exit_time = timezone.now()
-        trade.status = "CLOSED"
+        data = request.data.copy()
+        data["status"] = "CLOSED"
 
-        # Ensure the trade is attached to the JournalDay of the (local) exit date.
-        exit_date = trade.exit_time.date()
-        if not trade.journal_day or trade.journal_day.date != exit_date:
-            jd, _ = JournalDay.objects.get_or_create(user=request.user, date=exit_date)
-            trade.journal_day = jd
+        serializer = self.get_serializer(trade, data=data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
 
-        trade.save(update_fields=["exit_price", "exit_time", "status", "journal_day"])
-
-        ser = self.get_serializer(trade)
-        return Response(ser.data)
+        return Response(self.get_serializer(trade).data)
 
 
 class StrategyTagViewSet(viewsets.ModelViewSet):

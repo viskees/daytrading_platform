@@ -11,6 +11,9 @@ from .models import (
 )
 
 from decimal import Decimal
+from django.utils import timezone
+
+from .services import get_or_create_journal_day_with_carry
 
 class StrategyTagSerializer(serializers.ModelSerializer):
     """
@@ -154,9 +157,32 @@ class TradeSerializer(serializers.ModelSerializer):
         return trade
 
     def update(self, instance, validated_data):
+        """Update trade + enforce overnight-close semantics.
+
+        Key rule: if a trade becomes CLOSED, it must be attached to the JournalDay
+        of the (local) exit date so the Journal, calendar tiles, session stats and
+        account summary all reflect the close day.
+        """
         # Detect whether client sent tags (even an empty list) to allow clearing
         sentinel = object()
         tags = validated_data.pop("strategy_tags", sentinel)
+        
+        # ---- Overnight close enforcement (server-side safety net) ----
+        new_status = validated_data.get("status", instance.status)
+        if new_status == "CLOSED":
+            # Ensure exit_time exists
+            exit_time = validated_data.get("exit_time", instance.exit_time)
+            if exit_time is None:
+                exit_time = timezone.now()
+                validated_data["exit_time"] = exit_time
+
+            # Attach to the JournalDay of the local exit date
+            request = self.context.get("request")
+            user = getattr(request, "user", None) or instance.user
+            exit_date = timezone.localdate(exit_time)
+            jd, _ = get_or_create_journal_day_with_carry(user, exit_date)
+            validated_data["journal_day"] = jd
+
         for attr, val in validated_data.items():
             setattr(instance, attr, val)
         instance.save()
