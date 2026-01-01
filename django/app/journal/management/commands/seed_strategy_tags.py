@@ -1,7 +1,7 @@
 from django.core.management import BaseCommand
 from journal.models import StrategyTag
 
-NAMES = ["Breakout","Pullback","Reversal","VWAP","Trend","Range","News"]
+NAMES = ["Breakout","Pullback","Reversal","VWAP","Trend","News"]
 
 class Command(BaseCommand):
     help = "Seed default strategy tags"
