@@ -872,9 +872,12 @@ export default function Dashboard() {
   }, [refreshDashboard]);
 
   useEffect(() => {
-    const off = onTradeClosed(() => setCalendarKick(k => k + 1));
+    const off = onTradeClosed(() => {
+      setCalendarKick(k => k + 1);
+      void refreshDashboard();   // immediately refresh KPIs
+    });
     return off;
-  }, []);
+  }, [refreshDashboard]);
 
   const [showNew, setShowNew] = useState(false);
   const [closing, setClosing] = useState<Trade | null>(null);

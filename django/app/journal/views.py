@@ -386,6 +386,35 @@ class TradeViewSet(viewsets.ModelViewSet):
             daily_loss_pct = max(0.0, -realized_pnl) / eff_eq * 100.0
             used_daily_risk_pct = daily_loss_pct  # same concept for the bar
 
+        # --- Max Drawdown (intraday, based on realized P/L sequence) ---
+        start_eq = float(day.day_start_equity or 0.0) + float(day.adjustments_total or 0.0)
+
+        running_eq = start_eq
+        peak_eq = running_eq
+        max_dd = 0.0
+
+        # Closed trades ordered by exit_time represent the realized equity curve for the day
+        closed_for_curve = (
+            day.trades.filter(status="CLOSED")
+            .exclude(exit_time__isnull=True)
+            .order_by("exit_time", "id")
+        )
+
+        for t in closed_for_curve:
+            try:
+                running_eq += float(t.realized_pnl or 0.0)
+            except Exception:
+                continue
+            
+            if running_eq > peak_eq:
+                peak_eq = running_eq
+
+            dd = peak_eq - running_eq
+            if dd > max_dd:
+                max_dd = dd
+
+        max_dd_pct = (max_dd / peak_eq * 100.0) if peak_eq > 0 else 0.0
+
         return Response(
             {
                 "trades": trades.count(),
@@ -393,6 +422,7 @@ class TradeViewSet(viewsets.ModelViewSet):
                 "avg_r": avg_r,
                 "best_r": best_r,
                 "worst_r": worst_r,
+                "max_dd_pct": max_dd_pct,
                 "daily_loss_pct": daily_loss_pct,
                 "used_daily_risk_pct": used_daily_risk_pct,
                 "effective_equity": eff_eq,
@@ -428,7 +458,7 @@ class TradeViewSet(viewsets.ModelViewSet):
         pl_total = 0.0
         for t in Trade.objects.filter(user=user, status="CLOSED"):
             try:
-                pl_today += float(t.realized_pnl or 0.0)
+                pl_total += float(t.realized_pnl or 0.0)
             except Exception:
                 continue
 
