@@ -17,7 +17,7 @@ type Props = {
   onClose(): void;
 };
 
-const DEFAULT_TAGS = ["Breakout", "Pullback", "Trend", "Range", "News"];
+const DEFAULT_TAGS = ["Breakout", "Pullback", "Trend", "News"];
 
 export default function TradeEditor({ mode, initial = {}, onSubmit, onClose }: Props) {
   const isEdit = mode === "edit";
