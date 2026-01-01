@@ -292,6 +292,20 @@ function NewTradeDialog({
     return perUnit * q;
   }, [side, entryPrice, stopLoss, size]);
 
+  const positionValue$ = useMemo(() => {
+    if (!size || !entryPrice) return 0;
+    return Number(entryPrice) * Number(size);
+  }, [entryPrice, size]);
+  
+  const perUnitRisk$ = useMemo(() => {
+    if (!entryPrice || !stopLoss) return 0;
+    const ep = Number(entryPrice), sp = Number(stopLoss);
+    return side === "LONG" ? Math.max(0, ep - sp) : Math.max(0, sp - ep);
+  }, [side, entryPrice, stopLoss]);
+
+const fmtMoney = (n: number) =>
+  n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   const exceedsPerTrade = currentRisk$ > perTradeCap$ + 1e-9;
   const exceedsDaily = currentRisk$ > dailyRemaining$ + 1e-9;
 
@@ -378,6 +392,25 @@ function NewTradeDialog({
         <div>
           <div className="text-xs mb-1">Size</div>
           <Input type="number" value={size} onChange={e => setSize(e.target.value ? Number(e.target.value) : "")} />
+        </div>
+
+        <div className="md:col-span-3 -mt-1 text-xs text-muted-foreground flex flex-wrap gap-x-6 gap-y-1">
+          <div>
+            Position value:{" "}
+            <span className="font-medium text-foreground tabular-nums">
+              ${fmtMoney(positionValue$)}
+            </span>
+          </div>
+        
+          <div>
+            Risk at stop:{" "}
+            <span className="font-medium text-foreground tabular-nums">
+              ${fmtMoney(currentRisk$)}
+            </span>
+            <span className="ml-2 tabular-nums">
+              (per-share: ${fmtMoney(perUnitRisk$)})
+            </span>
+          </div>
         </div>
 
         <div className="md:col-span-3">
