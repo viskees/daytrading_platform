@@ -152,8 +152,10 @@ class TradeSerializer(serializers.ModelSerializer):
             if entry_price is None or quantity in (None, 0):
                 return Decimal("0.00")
             policy = self._get_user_settings(user)
-            notional = Decimal(str(entry_price)) * Decimal(str(quantity))
-            return policy.commission_for_notional(notional)
+            return policy.commission_for_side(
+                price=Decimal(str(entry_price)),
+                quantity=int(quantity),
+            )
         except Exception:
             return Decimal("0.00")
 
@@ -162,8 +164,10 @@ class TradeSerializer(serializers.ModelSerializer):
             if exit_price is None or quantity in (None, 0):
                 return Decimal("0.00")
             policy = self._get_user_settings(user)
-            notional = Decimal(str(exit_price)) * Decimal(str(quantity))
-            return policy.commission_for_notional(notional)
+            return policy.commission_for_side(
+                price=Decimal(str(exit_price)),
+                quantity=int(quantity),
+            )
         except Exception:
             return Decimal("0.00")
 
@@ -296,6 +300,9 @@ class UserSettingsSerializer(serializers.ModelSerializer):
             "max_trades_per_day",
             "commission_mode",
             "commission_value",
+            "commission_per_share",
+            "commission_min_per_side",
+            "commission_cap_pct_of_notional",
         ]
 
 

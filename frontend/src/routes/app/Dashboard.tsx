@@ -19,6 +19,7 @@ import {
   deleteAdjustment,
   patchDayStartEquity,
   type AdjustmentReason,
+  type CommissionMode,
   updateTrade,
 } from "@/lib/api";
 import { getInitialDark, hasStoredTheme, setTheme } from "@/lib/theme";
@@ -55,6 +56,15 @@ type RiskPolicy = {
   maxTradesPerDay: number;
 };
 
+type CommissionPolicy = {
+  commission_mode: CommissionMode;
+  commission_value: number;
+  commission_per_share: number;
+  commission_min_per_side: number;
+  commission_cap_pct_of_notional: number;
+};
+
+
 export type Trade = {
   id: string | number;
   ticker: string;
@@ -68,6 +78,8 @@ export type Trade = {
   notes?: string;
   strategyTags?: string[];
   status: "OPEN" | "CLOSED";
+  commissionEntry?: number;
+  commissionExit?: number;
 };
 
 type SessionStatus = {
@@ -292,6 +304,20 @@ function NewTradeDialog({
     return perUnit * q;
   }, [side, entryPrice, stopLoss, size]);
 
+  const positionValue$ = useMemo(() => {
+    if (!size || !entryPrice) return 0;
+    return Number(entryPrice) * Number(size);
+  }, [entryPrice, size]);
+  
+  const perUnitRisk$ = useMemo(() => {
+    if (!entryPrice || !stopLoss) return 0;
+    const ep = Number(entryPrice), sp = Number(stopLoss);
+    return side === "LONG" ? Math.max(0, ep - sp) : Math.max(0, sp - ep);
+  }, [side, entryPrice, stopLoss]);
+
+const fmtMoney = (n: number) =>
+  n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   const exceedsPerTrade = currentRisk$ > perTradeCap$ + 1e-9;
   const exceedsDaily = currentRisk$ > dailyRemaining$ + 1e-9;
 
@@ -380,6 +406,25 @@ function NewTradeDialog({
           <Input type="number" value={size} onChange={e => setSize(e.target.value ? Number(e.target.value) : "")} />
         </div>
 
+        <div className="md:col-span-3 -mt-1 text-xs text-muted-foreground flex flex-wrap gap-x-6 gap-y-1">
+          <div>
+            Position value:{" "}
+            <span className="font-medium text-foreground tabular-nums">
+              ${fmtMoney(positionValue$)}
+            </span>
+          </div>
+
+          <div>
+            Risk at stop:{" "}
+            <span className="font-medium text-foreground tabular-nums">
+              ${fmtMoney(currentRisk$)}
+            </span>
+            <span className="ml-2 tabular-nums">
+              (per-share: ${fmtMoney(perUnitRisk$)})
+            </span>
+          </div>
+        </div>
+
         <div className="md:col-span-3">
           <div className="text-xs mb-1">Strategy</div>
           <div className="flex flex-wrap gap-2">
@@ -451,10 +496,12 @@ function CloseTradeDialog({
   trade,
   onClosed,
   onClose,
+  commissionPolicy,
 }: {
   trade: Trade;
   onClosed: (id: string) => void;
   onClose: () => void;
+  commissionPolicy: CommissionPolicy | null;
 }) {
   const [exitPrice, setExitPrice] = useState<number | "">("");
   const [notes, setNotes] = useState(trade.notes ?? "");
@@ -462,6 +509,46 @@ function CloseTradeDialog({
   const [exitEmotionNote, setExitEmotionNote] = useState("");
   const [shots, setShots] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
+
+  const fmtMoney = (n: number) =>
+    Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const calcCommissionForSide = useCallback(
+    (price: number, qty: number) => {
+      if (!commissionPolicy) return 0;
+      if (!Number.isFinite(price) || price <= 0) return 0;
+      if (!Number.isFinite(qty) || qty <= 0) return 0;
+
+      const notional = price * qty;
+
+      if (commissionPolicy.commission_mode === "PCT") {
+        const pct = Number(commissionPolicy.commission_value || 0);
+        return Math.round((notional * (pct / 100)) * 100) / 100;
+      }
+
+      if (commissionPolicy.commission_mode === "FIXED") {
+        return Math.round(Number(commissionPolicy.commission_value || 0) * 100) / 100;
+      }
+
+      // PER_SHARE
+      const perShare = Number(commissionPolicy.commission_per_share || 0);
+      let fee = perShare * qty;
+      const min = Number(commissionPolicy.commission_min_per_side || 0);
+      if (min > 0) fee = Math.max(fee, min);
+      const capPct = Number(commissionPolicy.commission_cap_pct_of_notional || 0);
+      if (capPct > 0) fee = Math.min(fee, notional * (capPct / 100));
+      return Math.round(fee * 100) / 100;
+    },
+    [commissionPolicy]
+  );
+
+  const qty = Number(trade.size || 0);
+  const entryComm = Number(trade.commissionEntry || 0);
+  const estExitComm = useMemo(() => {
+    const px = Number(exitPrice || 0);
+    return px > 0 && qty > 0 ? calcCommissionForSide(px, qty) : 0;
+  }, [exitPrice, qty, calcCommissionForSide]);
+
 
   const submit = async () => {
     setSaving(true);
@@ -493,6 +580,14 @@ function CloseTradeDialog({
             value={exitPrice}
             onChange={(e) => setExitPrice(e.target.value ? Number(e.target.value) : "")}
           />
+        </div>
+
+        <div className="md:col-span-2 text-xs text-muted-foreground space-y-1">
+          <div>Entry commission: ${fmtMoney(entryComm)}</div>
+          <div>Exit commission (est.): ${fmtMoney(estExitComm)}</div>
+          <div className="font-medium text-foreground">
+            Total commission: ${fmtMoney(entryComm + estExitComm)}
+          </div>
         </div>
 
         <div className="md:col-span-2">
@@ -549,6 +644,7 @@ function CloseTradeDialog({
 export default function Dashboard() {
   const [risk, setRisk] = useState<RiskPolicy>({ maxRiskPerTradePct: 1, maxDailyLossPct: 3, maxTradesPerDay: 6 });
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
+  const [commissionPolicy, setCommissionPolicy] = useState<CommissionPolicy | null>(null);
   const [calendarKick, setCalendarKick] = useState(0);
 
   const [dashboardLayout, setDashboardLayout] = useState<DashboardWidgetState[]>(() => {
@@ -737,6 +833,13 @@ export default function Dashboard() {
         const settings = await apiFetchUserSettings();
         if (settings) {
           if (!hasStoredTheme()) setTheme(!!settings.dark_mode);
+          setCommissionPolicy({
+            commission_mode: (settings as any).commission_mode ?? "FIXED",
+            commission_value: Number((settings as any).commission_value ?? 0),
+            commission_per_share: Number((settings as any).commission_per_share ?? 0),
+            commission_min_per_side: Number((settings as any).commission_min_per_side ?? 0),
+            commission_cap_pct_of_notional: Number((settings as any).commission_cap_pct_of_notional ?? 0),
+          });
           setRisk((r) => ({
             ...r,
             maxRiskPerTradePct: Number(settings.max_risk_per_trade_pct ?? r.maxRiskPerTradePct),
@@ -874,6 +977,7 @@ export default function Dashboard() {
                 <th className="py-2 pr-2">Stop</th>
                 <th className="py-2 pr-2">Target</th>
                 <th className="py-2 pr-2">Size</th>
+                <th className="py-2 pr-2 text-right">Comm (entry)</th>
                 <th className="py-2 pr-2">Risk (R)</th>
                 <th className="py-2 pr-2">Strategy</th>
                 <th className="py-2 pr-2">Notes</th>
@@ -889,6 +993,9 @@ export default function Dashboard() {
                   <td className="py-2 pr-2">{t.stopLoss?.toFixed(2) ?? "-"}</td>
                   <td className="py-2 pr-2">{t.target?.toFixed(2) ?? "-"}</td>
                   <td className="py-2 pr-2">{t.size ?? "-"}</td>
+                  <td className="py-2 pr-2 text-right tabular-nums">
+                    {Number(t.commissionEntry || 0).toFixed(2)}
+                  </td>
                   <td className="py-2 pr-2">
                     {(() => {
                       const perUnit =
@@ -1049,6 +1156,7 @@ export default function Dashboard() {
             setOpenTrades(prev => prev.filter(t => String(t.id) !== String(id)));
             void refreshDashboard();
           }}
+          commissionPolicy={commissionPolicy}
         />
       )}
 

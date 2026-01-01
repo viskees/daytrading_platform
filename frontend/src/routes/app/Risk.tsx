@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,9 @@ type RiskPolicy = {
   maxTradesPerDay: number;
   commissionMode: CommissionMode;
   commissionValue: number;
+  commissionPerShare: number;
+  commissionMinPerSide: number;
+  commissionCapPctOfNotional: number;
 };
 
 export default function RiskPage() {
@@ -32,6 +35,9 @@ export default function RiskPage() {
     maxTradesPerDay: 6,
     commissionMode: "FIXED",
     commissionValue: 0,
+    commissionPerShare: 0,
+    commissionMinPerSide: 0,
+    commissionCapPctOfNotional: 0,
   });
   const [riskLoading, setRiskLoading] = useState(true);
   const [riskSaving, setRiskSaving] = useState(false);
@@ -71,6 +77,9 @@ export default function RiskPage() {
             maxTradesPerDay: Number(s.max_trades_per_day ?? 6),
             commissionMode: (s as any).commission_mode ?? "FIXED",
             commissionValue: Number((s as any).commission_value ?? 0),
+            commissionPerShare: Number((s as any).commission_per_share ?? 0),
+            commissionMinPerSide: Number((s as any).commission_min_per_side ?? 0),
+            commissionCapPctOfNotional: Number((s as any).commission_cap_pct_of_notional ?? 0),
           });
         }
       } catch {
@@ -98,6 +107,9 @@ export default function RiskPage() {
           max_trades_per_day: Number(risk.maxTradesPerDay),
           commission_mode: risk.commissionMode,
           commission_value: Number(risk.commissionValue),
+          commission_per_share: Number(risk.commissionPerShare),
+          commission_min_per_side: Number(risk.commissionMinPerSide),
+          commission_cap_pct_of_notional: Number(risk.commissionCapPctOfNotional),
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -192,6 +204,7 @@ export default function RiskPage() {
   // ----------------------------
   // Render
   // ----------------------------
+  const isPerShare = useMemo(() => risk.commissionMode === "PER_SHARE", [risk.commissionMode]);
   return (
     <div className="space-y-4">
       <Card>
@@ -264,24 +277,77 @@ export default function RiskPage() {
                 >
                   <option value="FIXED">Fixed amount</option>
                   <option value="PCT">Percentage of notional</option>
+                  <option value="PER_SHARE">Per share (IBKR fixed-style)</option>
                 </select>
               </label>
 
-              <label className="block md:col-span-2">
-                <span className="text-xs text-muted-foreground">
-                  {risk.commissionMode === "PCT" ? "Percent (%) per side" : "Amount (€/$) per side"}
-                </span>
-                <Input
-                  type="number"
-                  step={risk.commissionMode === "PCT" ? "0.01" : "0.01"}
-                  value={risk.commissionValue}
-                  onChange={(e) =>
-                    setRisk((r) => ({ ...r, commissionValue: Number(e.target.value) }))
-                  }
-                  disabled={riskLoading}
-                />
-              </label>
+              {!isPerShare && (
+                <label className="block md:col-span-2">
+                  <span className="text-xs text-muted-foreground">
+                    {risk.commissionMode === "PCT"
+                      ? "Percent (%) per side"
+                      : "Amount (€/$) per side"}
+                  </span>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={risk.commissionValue}
+                    onChange={(e) =>
+                      setRisk((r) => ({ ...r, commissionValue: Number(e.target.value) }))
+                    }
+                    disabled={riskLoading}
+                  />
+                </label>
+              )}
             </div>
+            {isPerShare && (
+              <div className="text-xs text-muted-foreground">
+                In <b>Per share</b> mode, the “Amount per side” field is not used.
+              </div>
+            )}
+            {risk.commissionMode === "PER_SHARE" && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Commission per share</div>
+                  <Input
+                    type="number"
+                    step="0.0001"
+                    value={risk.commissionPerShare}
+                    onChange={(e) =>
+                      setRisk((r) => ({ ...r, commissionPerShare: Number(e.target.value) }))
+                    }
+                    disabled={riskLoading}
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Minimum per side</div>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={risk.commissionMinPerSide}
+                    onChange={(e) =>
+                      setRisk((r) => ({ ...r, commissionMinPerSide: Number(e.target.value) }))
+                    }
+                    disabled={riskLoading}
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Cap (% of notional)</div>
+                  <Input
+                    type="number"
+                    step="0.1"
+                    value={risk.commissionCapPctOfNotional}
+                    onChange={(e) =>
+                      setRisk((r) => ({ ...r, commissionCapPctOfNotional: Number(e.target.value) }))
+                    }
+                    disabled={riskLoading}
+                  />
+                </div>
+              </div>
+            )}
+
           </div>
 
           {/* Equity */}

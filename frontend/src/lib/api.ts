@@ -13,7 +13,7 @@ type TokenPair = { access: string; refresh?: string };
 
 export type AdjustmentReason = "DEPOSIT" | "WITHDRAWAL" | "FEE" | "CORRECTION";
 
-export type CommissionMode = "PCT" | "FIXED";
+export type CommissionMode = "PCT" | "FIXED" | "PER_SHARE";
 
 type ApiTrade = {
   id: number;
@@ -286,6 +286,9 @@ export async function fetchUserSettings() {
     max_trades_per_day: Number(obj.max_trades_per_day ?? 0),
     commission_mode: (obj.commission_mode as CommissionMode) ?? "FIXED",
     commission_value: Number(obj.commission_value ?? 0),
+    commission_per_share: Number(obj.commission_per_share ?? 0),
+    commission_min_per_side: Number(obj.commission_min_per_side ?? 0),
+    commission_cap_pct_of_notional: Number(obj.commission_cap_pct_of_notional ?? 0),
   };
 }
 

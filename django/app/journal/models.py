@@ -10,9 +10,11 @@ class Emotion(models.TextChoices):
 class UserSettings(models.Model):
     COMMISSION_PCT = "PCT"
     COMMISSION_FIXED = "FIXED"
+    COMMISSION_PER_SHARE = "PER_SHARE"
     COMMISSION_MODE_CHOICES = [
         (COMMISSION_PCT, "Percentage"),
         (COMMISSION_FIXED, "Fixed amount"),
+        (COMMISSION_PER_SHARE, "Per share (IBKR fixed-style)"),
     ]
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="settings")
@@ -24,13 +26,21 @@ class UserSettings(models.Model):
 
     # Commission policy (applied per side: entry + exit)
     commission_mode = models.CharField(
-        max_length=8,
+        max_length=16,
         choices=COMMISSION_MODE_CHOICES,
         default=COMMISSION_FIXED,
     )
     # If mode=PCT => percent (e.g. 0.25 means 0.25%)
     # If mode=FIXED => money amount per side
     commission_value = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0"))
+
+    # --- NEW: Per-share commission (IBKR fixed-style) ---
+    # Applied per side (entry OR exit)
+    commission_per_share = models.DecimalField(max_digits=12, decimal_places=6, default=Decimal("0"))
+    commission_min_per_side = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    # Optional cap (0 = no cap). Cap is expressed as % of notional.
+    commission_cap_pct_of_notional = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0"))
+
 
     def commission_for_notional(self, notional: Decimal) -> Decimal:
         """
@@ -52,6 +62,47 @@ class UserSettings(models.Model):
         except Exception:
             return Decimal("0.00")
 
+    def commission_for_side(self, price: Decimal, quantity: int) -> Decimal:
+        """
+        Commission amount for ONE side (entry OR exit).
+        Supports:
+          - PCT  => % of notional
+          - FIXED => flat money amount per side
+          - PER_SHARE => qty * per_share, with optional min + cap(%notional)
+        Returned as money rounded to cents.
+        """
+        try:
+            px = Decimal(str(price or 0))
+            qty = int(quantity or 0)
+            if px <= 0 or qty <= 0:
+                return Decimal("0.00")
+
+            notional = px * Decimal(qty)
+
+            if self.commission_mode in (self.COMMISSION_PCT, self.COMMISSION_FIXED):
+                return self.commission_for_notional(notional)
+
+            if self.commission_mode == self.COMMISSION_PER_SHARE:
+                per_share = Decimal(str(self.commission_per_share or 0))
+                if per_share <= 0:
+                    return Decimal("0.00")
+
+                fee = per_share * Decimal(qty)
+
+                min_fee = Decimal(str(self.commission_min_per_side or 0))
+                if min_fee > 0:
+                    fee = max(fee, min_fee)
+
+                cap_pct = Decimal(str(self.commission_cap_pct_of_notional or 0))
+                if cap_pct > 0:
+                    cap = notional * (cap_pct / Decimal("100"))
+                    fee = min(fee, cap)
+
+                return fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+            return Decimal("0.00")
+        except Exception:
+            return Decimal("0.00")
 
     def __str__(self):
         return f"Settings({self.user})"
