@@ -103,7 +103,7 @@ type DaySummary = {
 };
 
 const LAST_EQUITY_KEY = "equity_last_known";
-const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "Range", "News"];
+const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "News"];
 
 type DashboardWidgetId = "risk" | "account" | "session" | "openTrades" | "calendar";
 type DashboardWidgetState = { id: DashboardWidgetId; open: boolean };

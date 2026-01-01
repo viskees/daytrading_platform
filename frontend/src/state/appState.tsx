@@ -229,7 +229,7 @@ const MOCK_TICKERS: Ticker[] = [
   { symbol: "META", last: 504.1, volume: 7_900_000, relVol: 0.9, changePct: -0.15 },
 ];
 
-const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "Range", "News"];
+const STRATEGY_TAGS = ["Breakout", "Pullback", "Reversal", "VWAP", "Trend", "News"];
 
 /* =========================
    Context + Provider
