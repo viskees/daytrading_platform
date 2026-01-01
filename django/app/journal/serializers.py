@@ -88,6 +88,8 @@ class TradeSerializer(serializers.ModelSerializer):
     r_multiple = serializers.FloatField(read_only=True)
     # expose realized P/L computed property from model
     realized_pnl = serializers.FloatField(read_only=True)
+    commission_entry = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    commission_exit = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     # allow client to set explicit exit_time when closing (server may also set default)
     exit_time = serializers.DateTimeField(required=False, allow_null=True)
 
@@ -123,6 +125,8 @@ class TradeSerializer(serializers.ModelSerializer):
             "risk_per_share",
             "r_multiple",
             "realized_pnl",
+            "commission_entry",
+            "commission_exit",
         ]
         read_only_fields = [
             "entry_time",
@@ -131,7 +135,38 @@ class TradeSerializer(serializers.ModelSerializer):
             "realized_pnl",
             "attachments",
             "strategy_tags",
+            "commission_entry",
+            "commission_exit",
         ]
+
+    def _get_user_settings(self, user) -> UserSettings:
+        try:
+            obj, _ = UserSettings.objects.get_or_create(user=user)
+            return obj
+        except Exception:
+            # last-resort fallback (should not happen)
+            return UserSettings(user=user)
+
+    def _calc_entry_commission(self, *, user, entry_price, quantity) -> Decimal:
+        try:
+            if entry_price is None or quantity in (None, 0):
+                return Decimal("0.00")
+            policy = self._get_user_settings(user)
+            notional = Decimal(str(entry_price)) * Decimal(str(quantity))
+            return policy.commission_for_notional(notional)
+        except Exception:
+            return Decimal("0.00")
+
+    def _calc_exit_commission(self, *, user, exit_price, quantity) -> Decimal:
+        try:
+            if exit_price is None or quantity in (None, 0):
+                return Decimal("0.00")
+            policy = self._get_user_settings(user)
+            notional = Decimal(str(exit_price)) * Decimal(str(quantity))
+            return policy.commission_for_notional(notional)
+        except Exception:
+            return Decimal("0.00")
+
 
     def validate(self, attrs):
         qty = attrs.get("quantity")
@@ -152,6 +187,20 @@ class TradeSerializer(serializers.ModelSerializer):
         sentinel = object()
         tags = validated_data.pop("strategy_tags", sentinel)
         trade = Trade.objects.create(**validated_data)
+
+        # Commission: store entry-side commission at creation time
+        try:
+            request = self.context.get("request")
+            user = getattr(request, "user", None) or trade.user
+            trade.commission_entry = self._calc_entry_commission(
+                user=user,
+                entry_price=trade.entry_price,
+                quantity=trade.quantity,
+            )
+            trade.save(update_fields=["commission_entry"])
+        except Exception:
+            pass
+
         if tags is not sentinel:
             trade.strategy_tags.set(tags)
         return trade
@@ -182,6 +231,29 @@ class TradeSerializer(serializers.ModelSerializer):
             exit_date = timezone.localdate(exit_time)
             jd, _ = get_or_create_journal_day_with_carry(user, exit_date)
             validated_data["journal_day"] = jd
+            
+            # Commission: set exit-side fee when closing (or when exit_price is provided/changed)
+            exit_price = validated_data.get("exit_price", instance.exit_price)
+            qty = validated_data.get("quantity", instance.quantity)
+            validated_data["commission_exit"] = self._calc_exit_commission(
+                user=user,
+                exit_price=exit_price,
+                quantity=qty,
+            )
+
+        # If entry_price/quantity changed while trade is OPEN, recompute entry commission
+        # (Keeps commission consistent with current entry notional)
+        if new_status != "CLOSED":
+            if "entry_price" in validated_data or "quantity" in validated_data:
+                request = self.context.get("request")
+                user = getattr(request, "user", None) or instance.user
+                ep = validated_data.get("entry_price", instance.entry_price)
+                qty = validated_data.get("quantity", instance.quantity)
+                validated_data["commission_entry"] = self._calc_entry_commission(
+                    user=user,
+                    entry_price=ep,
+                    quantity=qty,
+                )
 
         for attr, val in validated_data.items():
             setattr(instance, attr, val)
@@ -216,7 +288,15 @@ class JournalDaySerializer(serializers.ModelSerializer):
 class UserSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserSettings
-        fields = ["id", "dark_mode", "max_risk_per_trade_pct", "max_daily_loss_pct", "max_trades_per_day"]
+        fields = [
+            "id",
+            "dark_mode",
+            "max_risk_per_trade_pct",
+            "max_daily_loss_pct",
+            "max_trades_per_day",
+            "commission_mode",
+            "commission_value",
+        ]
 
 
 class AccountAdjustmentSerializer(serializers.ModelSerializer):

@@ -289,12 +289,10 @@ class TradeViewSet(viewsets.ModelViewSet):
         todays_closed = day.trades.filter(status="CLOSED")
         realized = 0.0
         for t in todays_closed:
-            if t.exit_price is None or t.stop_price is None:
+            try:
+                realized += float(t.realized_pnl or 0.0)
+            except Exception:
                 continue
-            move = float(t.exit_price - t.entry_price)
-            if t.side == "SHORT":
-                move = -move
-            realized += move * float(t.quantity)
 
         eff_eq_for_loss = float(day.effective_equity or 0.0)
         if eff_eq_for_loss > 0 and policy.max_daily_loss_pct is not None:
@@ -369,11 +367,10 @@ class TradeViewSet(viewsets.ModelViewSet):
             r = t.r_multiple
             if r is not None:
                 r_list.append(r)
-            if t.exit_price is not None:
-                move = float(t.exit_price - t.entry_price)
-                if t.side == "SHORT":
-                    move = -move
-                realized_pnl += move * float(t.quantity)
+            try:
+                realized_pnl += float(t.realized_pnl or 0.0)
+            except Exception:
+                continue
 
         wins = sum(1 for r in r_list if r > 0)
         total = len(r_list)
@@ -422,22 +419,18 @@ class TradeViewSet(viewsets.ModelViewSet):
         pl_today = 0.0
         if day:
             for t in day.trades.filter(status="CLOSED"):
-                if t.exit_price is None:
+                try:
+                    pl_today += float(t.realized_pnl or 0.0)
+                except Exception:
                     continue
-                move = float(t.exit_price - t.entry_price)
-                if t.side == "SHORT":
-                    move = -move
-                pl_today += move * float(t.quantity)
 
         # Total realized P/L across all closed trades for this user
         pl_total = 0.0
         for t in Trade.objects.filter(user=user, status="CLOSED"):
-            if t.exit_price is None:
+            try:
+                pl_today += float(t.realized_pnl or 0.0)
+            except Exception:
                 continue
-            move = float(t.exit_price - t.entry_price)
-            if t.side == "SHORT":
-                move = -move
-            pl_total += move * float(t.quantity)
 
         equity_today = float(day.effective_equity or 0.0) if day else 0.0
         # naive last-close equity: yesterday's day_start_equity if present
@@ -596,8 +589,14 @@ class PnLViewSet(viewsets.ViewSet):
             default=price_move,
             output_field=FloatField(),
         )
-        pnl_expr = ExpressionWrapper(
+        gross_pnl_expr = ExpressionWrapper(
             signed_move * F("quantity"),
+            output_field=FloatField(),
+        )
+
+        # NET: subtract stored commissions (both sides)
+        net_pnl_expr = ExpressionWrapper(
+            gross_pnl_expr - F("commission_entry") - F("commission_exit"),
             output_field=FloatField(),
         )
 
@@ -612,7 +611,7 @@ class PnLViewSet(viewsets.ViewSet):
             .values("journal_day__date")
             .annotate(
                 trades=Count("id"),
-                pl=Sum(pnl_expr, output_field=FloatField()),
+                pl=Sum(net_pnl_expr, output_field=FloatField()),
             )
             .order_by("journal_day__date")
         )

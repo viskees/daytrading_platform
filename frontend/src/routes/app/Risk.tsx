@@ -11,12 +11,15 @@ import {
   createAdjustment,
   deleteAdjustment,
   type AdjustmentReason,
+  type CommissionMode,
 } from "@/lib/api";
 
 type RiskPolicy = {
   maxRiskPerTradePct: number;
   maxDailyLossPct: number;
   maxTradesPerDay: number;
+  commissionMode: CommissionMode;
+  commissionValue: number;
 };
 
 export default function RiskPage() {
@@ -27,6 +30,8 @@ export default function RiskPage() {
     maxRiskPerTradePct: 1,
     maxDailyLossPct: 3,
     maxTradesPerDay: 6,
+    commissionMode: "FIXED",
+    commissionValue: 0,
   });
   const [riskLoading, setRiskLoading] = useState(true);
   const [riskSaving, setRiskSaving] = useState(false);
@@ -64,6 +69,8 @@ export default function RiskPage() {
             maxRiskPerTradePct: Number(s.max_risk_per_trade_pct ?? 1),
             maxDailyLossPct: Number(s.max_daily_loss_pct ?? 3),
             maxTradesPerDay: Number(s.max_trades_per_day ?? 6),
+            commissionMode: (s as any).commission_mode ?? "FIXED",
+            commissionValue: Number((s as any).commission_value ?? 0),
           });
         }
       } catch {
@@ -89,6 +96,8 @@ export default function RiskPage() {
           max_risk_per_trade_pct: Number(risk.maxRiskPerTradePct),
           max_daily_loss_pct: Number(risk.maxDailyLossPct),
           max_trades_per_day: Number(risk.maxTradesPerDay),
+          commission_mode: risk.commissionMode,
+          commission_value: Number(risk.commissionValue),
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -232,6 +241,46 @@ export default function RiskPage() {
                 onChange={(e) => setRisk((r) => ({ ...r, maxTradesPerDay: Number(e.target.value) }))}
                 disabled={riskLoading}
               />
+            </div>
+          </div>
+
+          {/* Commission */}
+          <div className="rounded-2xl border border-neutral-700 p-4 space-y-3">
+            <h3 className="text-lg font-semibold">Commission</h3>
+            <div className="text-xs text-muted-foreground">
+              Commission is applied <b>per side</b> (entry + exit) and subtracted from trade P/L.
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+              <label className="block">
+                <span className="text-xs text-muted-foreground">Mode</span>
+                <select
+                  className="mt-1 w-full rounded-xl border bg-background text-foreground p-2
+                             focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={risk.commissionMode}
+                  onChange={(e) =>
+                    setRisk((r) => ({ ...r, commissionMode: e.target.value as CommissionMode }))
+                  }
+                  disabled={riskLoading}
+                >
+                  <option value="FIXED">Fixed amount</option>
+                  <option value="PCT">Percentage of notional</option>
+                </select>
+              </label>
+
+              <label className="block md:col-span-2">
+                <span className="text-xs text-muted-foreground">
+                  {risk.commissionMode === "PCT" ? "Percent (%) per side" : "Amount (€/$) per side"}
+                </span>
+                <Input
+                  type="number"
+                  step={risk.commissionMode === "PCT" ? "0.01" : "0.01"}
+                  value={risk.commissionValue}
+                  onChange={(e) =>
+                    setRisk((r) => ({ ...r, commissionValue: Number(e.target.value) }))
+                  }
+                  disabled={riskLoading}
+                />
+              </label>
             </div>
           </div>
 
