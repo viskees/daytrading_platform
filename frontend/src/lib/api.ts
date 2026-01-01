@@ -13,6 +13,8 @@ type TokenPair = { access: string; refresh?: string };
 
 export type AdjustmentReason = "DEPOSIT" | "WITHDRAWAL" | "FEE" | "CORRECTION";
 
+export type CommissionMode = "PCT" | "FIXED";
+
 type ApiTrade = {
   id: number;
   journal_day: number;
@@ -36,6 +38,9 @@ type ApiTrade = {
   // optional server-calculated fields
   realized_pnl?: number;
   r_multiple?: number | null;
+
+  commission_entry?: number;
+  commission_exit?: number;
 
   // emotion fields (server optional)
   entry_emotion?: "NEUTRAL" | "BIASED" | null;
@@ -61,6 +66,9 @@ export type NormalizedTrade = {
   exitTime?: string | null;
   realizedPnl?: number;
   rMultiple?: number | null;
+
+  commissionEntry?: number;
+  commissionExit?: number;
 
   entryEmotion?: "NEUTRAL" | "BIASED" | null;
   entryEmotionNote?: string | null;
@@ -276,6 +284,8 @@ export async function fetchUserSettings() {
     max_risk_per_trade_pct: Number(obj.max_risk_per_trade_pct ?? 0),
     max_daily_loss_pct: Number(obj.max_daily_loss_pct ?? 0),
     max_trades_per_day: Number(obj.max_trades_per_day ?? 0),
+    commission_mode: (obj.commission_mode as CommissionMode) ?? "FIXED",
+    commission_value: Number(obj.commission_value ?? 0),
   };
 }
 
@@ -363,6 +373,10 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     exitTime: x.exit_time ?? undefined,
     realizedPnl: realizedPnlVal,
     rMultiple: rMultipleVal,
+    commissionEntry:
+      typeof (x as any).commission_entry === "number" ? (x as any).commission_entry : undefined,
+    commissionExit:
+      typeof (x as any).commission_exit === "number" ? (x as any).commission_exit : undefined,
     entryEmotion: x.entry_emotion ?? null,
     entryEmotionNote: x.entry_emotion_note ?? "",
     exitEmotion: x.exit_emotion ?? null,

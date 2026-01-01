@@ -1,6 +1,6 @@
 from django.db import models
 from django.conf import settings
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from django.utils import timezone
 
 class Emotion(models.TextChoices):
@@ -8,12 +8,50 @@ class Emotion(models.TextChoices):
     BIASED  = "BIASED",  "Biased"
 
 class UserSettings(models.Model):
+    COMMISSION_PCT = "PCT"
+    COMMISSION_FIXED = "FIXED"
+    COMMISSION_MODE_CHOICES = [
+        (COMMISSION_PCT, "Percentage"),
+        (COMMISSION_FIXED, "Fixed amount"),
+    ]
+
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="settings")
     entry_time = models.DateTimeField(auto_now_add=True)
     dark_mode = models.BooleanField(default=False)
     max_risk_per_trade_pct = models.DecimalField(max_digits=5, decimal_places=2, default=2.00)
     max_daily_loss_pct = models.DecimalField(max_digits=5, decimal_places=2, default=4.00)
     max_trades_per_day = models.PositiveIntegerField(default=10)
+
+    # Commission policy (applied per side: entry + exit)
+    commission_mode = models.CharField(
+        max_length=8,
+        choices=COMMISSION_MODE_CHOICES,
+        default=COMMISSION_FIXED,
+    )
+    # If mode=PCT => percent (e.g. 0.25 means 0.25%)
+    # If mode=FIXED => money amount per side
+    commission_value = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0"))
+
+    def commission_for_notional(self, notional: Decimal) -> Decimal:
+        """
+        Commission amount for ONE side (entry OR exit).
+        - PCT: notional * (commission_value/100)
+        - FIXED: commission_value
+        Returned as money rounded to cents.
+        """
+        try:
+            notional_d = Decimal(str(notional or 0))
+            val = Decimal(str(self.commission_value or 0))
+            if val <= 0:
+                return Decimal("0.00")
+            if self.commission_mode == self.COMMISSION_PCT:
+                fee = notional_d * (val / Decimal("100"))
+            else:
+                fee = val
+            return fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except Exception:
+            return Decimal("0.00")
+
 
     def __str__(self):
         return f"Settings({self.user})"
@@ -53,30 +91,27 @@ class JournalDay(models.Model):
     def effective_equity(self) -> Decimal:
         """
         Effective equity used by risk checks:
-        day_start_equity + realized P/L from CLOSED trades + Σ adjustments_today
+        day_start_equity + realized P/L from CLOSED trades (NET) + Σ adjustments_today
         """
         start = Decimal(str(self.day_start_equity or 0))
         realized = Decimal("0")
         for t in self.trades.filter(status="CLOSED"):
-            if t.exit_price is None or t.entry_price is None or t.quantity is None:
+            # Use trade.realized_pnl which is NET of commissions (float)
+            try:
+                realized += Decimal(str(t.realized_pnl or 0))
+            except Exception:
                 continue
-            move = Decimal(str(t.exit_price)) - Decimal(str(t.entry_price))
-            if t.side == "SHORT":
-                move = -move
-            realized += move * Decimal(str(t.quantity))
         return start + realized + self.adjustments_total
 
     @property
     def realized_pnl(self):
-        """Realized P/L for the day from CLOSED trades only."""
+        """Realized P/L for the day from CLOSED trades only (NET)."""
         total = 0.0
         for t in self.trades.filter(status="CLOSED"):
-            if t.exit_price is None or t.entry_price is None or t.quantity in (None, 0):
+            try:
+                total += float(t.realized_pnl or 0.0)
+            except Exception:
                 continue
-            move = float(t.exit_price) - float(t.entry_price)
-            if t.side == "SHORT":
-                move = -move
-            total += move * float(t.quantity)
         return round(total, 2)
 
     @property
@@ -150,6 +185,10 @@ class Trade(models.Model):
     )
     exit_emotion_note = models.TextField(blank=True, default="")
     strategy_tags = models.ManyToManyField(StrategyTag, related_name="trades", blank=True)
+    # Commission amounts stored per side (money)
+    commission_entry = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    commission_exit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+
 
     @property
     def risk_per_share(self):
@@ -179,15 +218,27 @@ class Trade(models.Model):
             return None
         
     @property
-    def realized_pnl(self):
-        """(exit - entry)*qty for LONG, (entry - exit)*qty for SHORT; 0.0 if not closed/invalid."""
+    def gross_pnl(self) -> Decimal:
+        """Gross P/L before commissions (money)."""
         try:
             if self.exit_price is None or self.entry_price is None or self.quantity in (None, 0):
-                return 0.0
-            move = float(self.exit_price) - float(self.entry_price)
+                return Decimal("0.00")
+            move = Decimal(str(self.exit_price)) - Decimal(str(self.entry_price))
             if self.side == "SHORT":
                 move = -move
-            return round(move * float(self.quantity), 2)
+            return (move * Decimal(str(self.quantity))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except Exception:
+            return Decimal("0.00")
+
+    @property
+    def realized_pnl(self):
+        """NET P/L (gross - commissions). Returns float for API compatibility."""
+        try:
+            gross = self.gross_pnl
+            fee_e = Decimal(str(self.commission_entry or 0))
+            fee_x = Decimal(str(self.commission_exit or 0))
+            net = (gross - fee_e - fee_x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            return float(net)
         except Exception:
             return 0.0
 
