@@ -39,8 +39,17 @@ type ApiTrade = {
   realized_pnl?: number;
   r_multiple?: number | null;
 
+  // scaling fields (server-calculated / canonical)
+  // - position_qty: remaining shares/contracts (open size)
+  // - avg_entry_price: weighted average entry after adds
+  position_qty?: number;
+  avg_entry_price?: number;
+
   commission_entry?: number;
   commission_exit?: number;
+  commission_entry_total?: number | string;
+  commission_exit_total?: number | string;
+  commission_total?: number | string;
 
   // emotion fields (server optional)
   entry_emotion?: "NEUTRAL" | "BIASED" | null;
@@ -67,6 +76,10 @@ export type NormalizedTrade = {
   realizedPnl?: number;
   rMultiple?: number | null;
 
+  // scaling (preferred for OPEN trades)
+  positionQty?: number;
+  avgEntryPrice?: number;
+
   commissionEntry?: number;
   commissionExit?: number;
 
@@ -82,6 +95,16 @@ export type NormalizedTrade = {
 /* ----------------------- Small utilities ------------------------------ */
 function toArray<T>(x: unknown): T[] {
   return Array.isArray(x) ? (x as T[]) : [];
+}
+
+function toNumber(v: unknown): number | undefined {
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
 }
 
 function todayISO() {
@@ -332,8 +355,15 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     .map((t) => (t && typeof t === "object" ? t.name : t))
     .filter(Boolean);
 
-  const qtyNum = Number(x.quantity || 0);
-  const entryNum = Number(x.entry_price);
+  // "quantity" is the original trade quantity; "position_qty" is the live remaining size.
+  // For CLOSED trades, position_qty may be 0 even though realized PnL should be based on the filled/closed quantity.
+  // For OPEN trades, position_qty is the current live size and is preferable for risk/position displays.
+  const qtyForPnL =
+    x.status === "CLOSED"
+      ? Number(x.quantity || 0)
+      : Number((x.position_qty ?? x.quantity) || 0);
+
+  const entryNum = Number((x.avg_entry_price ?? x.entry_price));
   const exitNum = x.exit_price != null ? Number(x.exit_price) : null;
   const stopNum = x.stop_price != null ? Number(x.stop_price) : null;
 
@@ -343,10 +373,10 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     realizedPnlVal === undefined &&
     exitNum !== null &&
     Number.isFinite(entryNum) &&
-    Number.isFinite(qtyNum)
+    Number.isFinite(qtyForPnL)
   ) {
     const move = exitNum - entryNum;
-    realizedPnlVal = (x.side === "SHORT" ? -move : move) * qtyNum;
+    realizedPnlVal = (x.side === "SHORT" ? -move : move) * qtyForPnL;
   }
 
   let rMultipleVal: number | null =
@@ -364,8 +394,9 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     journal_day: x.journal_day,
     ticker: x.ticker,
     side: x.side,
-    size: x.quantity || undefined,
-    entryPrice: x.entry_price,
+    // keep size/entryPrice aligned with *current* position for OPEN trades
+    size: (x.position_qty ?? x.quantity) || undefined,
+    entryPrice: (x.avg_entry_price ?? x.entry_price),
     stopLoss: x.stop_price ?? null,
     target: x.target_price ?? null,
     exitPrice: x.exit_price ?? null,
@@ -376,10 +407,24 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     exitTime: x.exit_time ?? undefined,
     realizedPnl: realizedPnlVal,
     rMultiple: rMultipleVal,
+    positionQty:
+      typeof (x as any).position_qty === "number"
+        ? (x as any).position_qty
+        : undefined,
+    avgEntryPrice:
+      typeof (x as any).avg_entry_price === "number"
+        ? (x as any).avg_entry_price
+        : undefined,
+    // Prefer fill-based totals if backend provides them (scaling-aware).
+    // Fallback to legacy per-side fields.
     commissionEntry:
-      typeof (x as any).commission_entry === "number" ? (x as any).commission_entry : undefined,
+      toNumber((x as any).commission_entry_total) ??
+      toNumber((x as any).commission_entry) ??
+      undefined,
     commissionExit:
-      typeof (x as any).commission_exit === "number" ? (x as any).commission_exit : undefined,
+      toNumber((x as any).commission_exit_total) ??
+      toNumber((x as any).commission_exit) ??
+      undefined,
     entryEmotion: x.entry_emotion ?? null,
     entryEmotionNote: x.entry_emotion_note ?? "",
     exitEmotion: x.exit_emotion ?? null,
@@ -598,6 +643,43 @@ export async function closeTrade(
     });
   } catch {}
 
+  return normalizeTradeAsync(json);
+}
+
+
+/* ---------------------------- Scaling -------------------------------- */
+export async function scaleTrade(
+  id: number | string,
+  payload: {
+    direction: "IN" | "OUT"; // required by backend
+    quantity: number;        // must be >= 1 (positive)
+    price?: number | null; // optional; server can default to last/entry
+    note?: string;         // optional note for the scale action
+  }
+): Promise<NormalizedTrade> {
+  const q = Number(payload.quantity);
+  if (!Number.isFinite(q) || q < 1) {
+    throw new Error("Please provide a quantity >= 1 for scaling.");
+  }
+  if (payload.direction !== "IN" && payload.direction !== "OUT") {
+    throw new Error("Scale direction must be IN or OUT.");
+  }
+
+  const body: any = { direction: payload.direction, quantity: Math.round(q) };
+  if (payload.price != null && Number.isFinite(Number(payload.price))) {
+    body.price = Number(payload.price);
+  }
+  if (payload.note !== undefined) body.note = String(payload.note ?? "");
+
+  const res = await apiFetch(`/journal/trades/${id}/scale/`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    throw new Error(msg || "Scale trade failed");
+  }
+  const json: ApiTrade = await res.json();
   return normalizeTradeAsync(json);
 }
 

@@ -1,0 +1,46 @@
+Phase 1 (fast win) — Closed trade summary upgrade
+
+Frontend only
+	•	Update closed trade modal to show:
+	•	Entry VWAP, Exit VWAP
+	•	Max size / total in / total out
+	•	Gross P/L, commissions (entry/exit), net P/L
+	•	Fix “Size: —” → show max_position_qty (or total_entry_qty)
+
+✅ No backend changes.
+
+⸻
+
+Phase 2 — Scaling notes appended into Trade.notes
+
+Backend small change
+	•	In TradeViewSet.scale, when a scale occurs:
+	•	format a note line
+	•	append to trade.notes
+	•	save trade
+
+✅ No migrations.
+✅ Notes stay “one place”.
+
+⸻
+
+Phase 3 — Scaling screenshots
+
+Frontend
+	•	Add ImagePasteDrop to ScaleTradeDialog
+	•	After successful scale: upload attachments to same trade id
+	•	Caption prefix: “Scale IN/OUT @ price qty”
+
+✅ No backend changes.
+
+⸻
+
+Phase 4 (optional but powerful) — Journal “trade quality” fields
+
+Add a few fields to Trade model:
+	•	setup_quality (1–5)
+	•	followed_plan (bool)
+	•	mistake_tags (json or m2m)
+	•	reflection_good, reflection_improve
+
+This is where the journal becomes “coaching-level.”

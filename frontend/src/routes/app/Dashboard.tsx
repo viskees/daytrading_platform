@@ -20,7 +20,9 @@ import {
   patchDayStartEquity,
   type AdjustmentReason,
   type CommissionMode,
+  type NormalizedTrade,
   updateTrade,
+  scaleTrade as apiScaleTrade,
 } from "@/lib/api";
 import { getInitialDark, hasStoredTheme, setTheme } from "@/lib/theme";
 import { onTradeClosed, emitTradeClosed } from "@/lib/events";
@@ -65,23 +67,9 @@ type CommissionPolicy = {
 };
 
 
-export type Trade = {
-  id: string | number;
-  ticker: string;
-  side: "LONG" | "SHORT";
-  entryPrice: number;
-  entryTime: string;
-  stopLoss?: number;
-  target?: number;
-  riskR?: number;
-  size?: number;
-  notes?: string;
-  strategyTags?: string[];
-  status: "OPEN" | "CLOSED";
-  commissionEntry?: number;
-  commissionExit?: number;
-};
-
+// Use the ONE canonical UI trade type returned by src/lib/api.ts
+type Trade = NormalizedTrade;
+ 
 type SessionStatus = {
   trades: number;
   win_rate: number;
@@ -295,6 +283,50 @@ function NewTradeDialog({
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  function formatScaleError(e: any): { message: string; extra?: string[] } {
+    // Default fallback
+    const fallback = { message: String(e?.message ?? e ?? "Scale trade failed") };
+
+    // Common case: fetch() error text is thrown, sometimes it's JSON in a string
+    const rawMsg = String(e?.message ?? "");
+    const tryParseJsonString = (s: string) => {
+      try {
+        const j = JSON.parse(s);
+        return j && typeof j === "object" ? j : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const obj =
+      (e && typeof e === "object" && (e.detail || e.code || e.data) ? e : null) ||
+      (rawMsg ? tryParseJsonString(rawMsg) : null);
+
+    if (!obj) return fallback;
+
+    const detail = typeof obj.detail === "string" && obj.detail.trim() ? obj.detail.trim() : "";
+    const message = detail || fallback.message;
+
+    const d = obj.data && typeof obj.data === "object" ? obj.data : null;
+    if (!d) return { message };
+
+    const extra: string[] = [];
+    const per = d.per_trade_risk_pct ?? d.perTradeRiskPct;
+    const max = d.max_risk_per_trade_pct ?? d.maxRiskPerTradePct;
+    const qty = d.new_quantity ?? d.newQuantity;
+    const price = d.price;
+    const stop = d.stop_price ?? d.stopPrice;
+    const eq = d.effective_equity ?? d.effectiveEquity;
+
+    if (per != null && max != null) extra.push(`Per-trade risk: ${per}% (max ${max}%)`);
+    if (qty != null) extra.push(`New quantity: ${qty}`);
+    if (price != null) extra.push(`Price: ${price}`);
+    if (stop != null) extra.push(`Stop: ${stop}`);
+    if (eq != null) extra.push(`Effective equity: ${eq}`);
+
+    return { message, extra: extra.length ? extra : undefined };
+  }
+
   const toggleTag = (tag: string) => setTags(t => t.includes(tag) ? t.filter(x => x !== tag) : [...t, tag]);
 
   const currentRisk$ = useMemo(() => {
@@ -498,7 +530,7 @@ function CloseTradeDialog({
   onClose,
   commissionPolicy,
 }: {
-  trade: Trade;
+  rade: Trade;
   onClosed: (id: string) => void;
   onClose: () => void;
   commissionPolicy: CommissionPolicy | null;
@@ -542,7 +574,11 @@ function CloseTradeDialog({
     [commissionPolicy]
   );
 
-  const qty = Number(trade.size || 0);
+  /**
+   * If the trade has scaled, trade.size may be the original size.
+   * Use current positionQty when available so commission estimates aren't wrong.
+   */
+  const qty = Number(trade.positionQty ?? trade.size ?? 0);
   const entryComm = Number(trade.commissionEntry || 0);
   const estExitComm = useMemo(() => {
     const px = Number(exitPrice || 0);
@@ -641,6 +677,124 @@ function CloseTradeDialog({
   );
 }
 
+
+function ScaleTradeDialog({
+  trade,
+  onScaled,
+  onClose,
+}: {
+  trade: Trade;
+  onScaled: (updated: Trade) => void;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<"IN" | "OUT">("IN");
+  const [qty, setQty] = useState<number | "">("");
+  const [price, setPrice] = useState<number | "">("");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const currentQty = Number(trade.positionQty ?? trade.size ?? 0);
+  const entryPx = Number(trade.avgEntryPrice ?? trade.entryPrice ?? 0);
+
+  const submit = async () => {
+    const q = Number(qty);
+    if (!Number.isFinite(q) || q <= 0) {
+      setErr("Enter a positive quantity.");
+      return;
+    }
+
+    // simple client guard: don't allow scaling out more than current size
+    if (mode === "OUT" && currentQty > 0 && Math.abs(q) > currentQty) {
+      setErr(`Cannot scale out ${q}; current position is ${currentQty}.`);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      setErr(null);
+      const updated = await apiScaleTrade(trade.id, {
+        direction: mode === "IN" ? "IN" : "OUT",
+        quantity: Math.round(Math.abs(q)),
+        price: price === "" ? null : Number(price),
+        note,
+      });
+      onScaled(updated);
+      onClose();
+    } catch (e: any) {
+      const parsed = formatScaleError(e);
+      // Store a single string; we’ll render extra lines if present by encoding newlines
+      const combined = parsed.extra?.length
+        ? `${parsed.message}\n\n${parsed.extra.map((x) => `• ${x}`).join("\n")}`
+        : parsed.message;
+      setErr(combined);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ModalShell title={`Scale ${trade.ticker}`} onClose={onClose}>
+      {err && (
+        <div className="mb-3 text-sm text-red-600 whitespace-pre-wrap">
+          {err}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="md:col-span-3 text-xs text-muted-foreground">
+          Current position: <span className="font-medium text-foreground">{currentQty || "-"}</span>{" "}
+          · Avg entry: <span className="font-medium text-foreground">{entryPx ? entryPx.toFixed(2) : "-"}</span>
+        </div>
+
+        <div>
+          <div className="text-xs mb-1">Action</div>
+          <div className="flex gap-2">
+            <Button variant={mode === "IN" ? "default" : "outline"} onClick={() => setMode("IN")}>
+              Scale in
+            </Button>
+            <Button variant={mode === "OUT" ? "default" : "outline"} onClick={() => setMode("OUT")}>
+              Scale out
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs mb-1">Quantity</div>
+          <Input
+            type="number"
+            value={qty}
+            onChange={(e) => setQty(e.target.value ? Number(e.target.value) : "")}
+            placeholder="e.g. 100"
+          />
+        </div>
+
+        <div>
+          <div className="text-xs mb-1">Price (optional)</div>
+          <Input
+            type="number"
+            value={price}
+            onChange={(e) => setPrice(e.target.value ? Number(e.target.value) : "")}
+            placeholder="leave empty to let server decide"
+          />
+        </div>
+
+        <div className="md:col-span-3">
+          <div className="text-xs mb-1">Note (optional)</div>
+          <Textarea value={note} onChange={(e) => setNote(e.target.value)} className="h-20" />
+        </div>
+      </div>
+
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button onClick={submit} disabled={saving || !qty}>
+          Apply
+        </Button>
+      </div>
+    </ModalShell>
+  );
+}
+
 export default function Dashboard() {
   const [risk, setRisk] = useState<RiskPolicy>({ maxRiskPerTradePct: 1, maxDailyLossPct: 3, maxTradesPerDay: 6 });
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
@@ -702,10 +856,17 @@ export default function Dashboard() {
   const refreshGuard = useRef<{ inflight: boolean; nextOk: number }>({ inflight: false, nextOk: 0 });
 
   const perTradeRisk$ = (t: Trade) => {
-    if (!t.size || !t.stopLoss || !t.entryPrice) return 0;
-    const perUnit = t.side === "LONG" ? Math.max(0, t.entryPrice - t.stopLoss) : Math.max(0, t.stopLoss - t.entryPrice);
-    return perUnit * t.size;
-  };
+    const qty = Number(t.positionQty ?? t.size ?? 0);
+    const entry = Number(t.avgEntryPrice ?? t.entryPrice ?? 0);
+    const stop = t.stopLoss == null ? NaN : Number(t.stopLoss);
+
+    if (!qty || !isFinite(qty) || !isFinite(entry) || !isFinite(stop)) return 0;
+
+    const perUnit =
+      t.side === "LONG" ? Math.max(0, entry - stop) : Math.max(0, stop - entry);
+
+    return perUnit * qty;
+ };
 
   const openRisk$ = useMemo(() => openTrades.reduce((sum, t) => sum + perTradeRisk$(t), 0), [openTrades]);
   const realizedLoss$Today = useMemo(() => Math.max(0, -Number(todaysPL || 0)), [todaysPL]);
@@ -851,7 +1012,7 @@ export default function Dashboard() {
 
       try {
         const trades = await apiFetchOpenTrades();
-        setOpenTrades(Array.isArray(trades) ? (trades as Trade[]) : []);
+        setOpenTrades(Array.isArray(trades) ? trades : []);
       } catch {}
 
       void refreshDashboard();
@@ -882,7 +1043,7 @@ export default function Dashboard() {
   const [showNew, setShowNew] = useState(false);
   const [closing, setClosing] = useState<Trade | null>(null);
   const [editing, setEditing] = useState<Trade | null>(null);
-
+  const [scaling, setScaling] = useState<Trade | null>(null);
   const RiskSummary = () => (
     <Card>
       <CardContent className="p-4">
@@ -980,7 +1141,7 @@ export default function Dashboard() {
                 <th className="py-2 pr-2">Stop</th>
                 <th className="py-2 pr-2">Target</th>
                 <th className="py-2 pr-2">Size</th>
-                <th className="py-2 pr-2 text-right">Comm (entry)</th>
+                <th className="py-2 pr-2 text-right">Comm (E / X)</th>
                 <th className="py-2 pr-2">Risk (R)</th>
                 <th className="py-2 pr-2">Strategy</th>
                 <th className="py-2 pr-2">Notes</th>
@@ -992,23 +1153,31 @@ export default function Dashboard() {
                 <tr key={t.id} className="border-b last:border-none align-top">
                   <td className="py-2 pr-2 font-medium">{t.ticker}</td>
                   <td className="py-2 pr-2">{t.side}</td>
-                  <td className="py-2 pr-2">{t.entryPrice.toFixed(2)}</td>
+                  <td className="py-2 pr-2">
+                    {Number((t.avgEntryPrice ?? t.entryPrice) || 0).toFixed(2)}
+                  </td>
                   <td className="py-2 pr-2">{t.stopLoss?.toFixed(2) ?? "-"}</td>
                   <td className="py-2 pr-2">{t.target?.toFixed(2) ?? "-"}</td>
-                  <td className="py-2 pr-2">{t.size ?? "-"}</td>
+                  <td className="py-2 pr-2">{t.positionQty ?? t.size ?? "-"}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">
                     {Number(t.commissionEntry || 0).toFixed(2)}
+                    <span className="opacity-60"> / </span>
+                    {Number(t.commissionExit || 0).toFixed(2)}
                   </td>
                   <td className="py-2 pr-2">
                     {(() => {
+                      const qty = Number(t.positionQty ?? t.size ?? 0);
+                      const entry = Number(t.avgEntryPrice ?? t.entryPrice ?? 0);
+                      const stop = t.stopLoss == null ? NaN : Number(t.stopLoss);
+
+                      if (!qty || !isFinite(qty) || !isFinite(entry) || !isFinite(stop)) return "-";
+
                       const perUnit =
-                        t.stopLoss == null || t.size == null
-                          ? 0
-                          : (t.side === "LONG"
-                              ? Math.max(0, t.entryPrice - t.stopLoss)
-                              : Math.max(0, t.stopLoss - t.entryPrice));
-                      const riskDollar = perUnit * (t.size ?? 0);
+                        t.side === "LONG" ? Math.max(0, entry - stop) : Math.max(0, stop - entry);
+
+                      const riskDollar = perUnit * qty;
                       const r = perTradeCap$ > 0 ? riskDollar / perTradeCap$ : 0;
+
                       return riskDollar ? r.toFixed(2) : "-";
                     })()}
                   </td>
@@ -1027,6 +1196,7 @@ export default function Dashboard() {
                   <td className="py-2 pr-2">
                   <div className="flex gap-2">
                     <Button size="sm" variant="outline" onClick={() => setEditing(t)}>Edit</Button>
+                    <Button size="sm" variant="outline" onClick={() => setScaling(t)}>Scale</Button>
                     <Button size="sm" variant="outline" onClick={() => setClosing(t)}>Close</Button>
                   </div>
                 </td>
@@ -1140,7 +1310,7 @@ export default function Dashboard() {
           onCreated={async () => {
             try {
               const fresh = await apiFetchOpenTrades();
-              setOpenTrades(Array.isArray(fresh) ? (fresh as Trade[]) : []);
+              setOpenTrades(Array.isArray(fresh) ? fresh : []);
             } catch {}
             void refreshDashboard();
           }}
@@ -1173,7 +1343,9 @@ export default function Dashboard() {
             entryPrice: editing.entryPrice,
             stopLoss: editing.stopLoss ?? null,
             target: editing.target ?? null,
-            size: editing.size ?? 1,
+            // if trade has scaled, show current live size in the editor
+            // (editing is disabled, but displayed size should be accurate)
+            size: (editing.positionQty ?? editing.size ?? 1),
             notes: editing.notes ?? "",
             strategyTags: editing.strategyTags ?? [],
           }}
@@ -1193,8 +1365,23 @@ export default function Dashboard() {
             // refresh open trades table after saving
             try {
               const fresh = await apiFetchOpenTrades();
-              setOpenTrades(Array.isArray(fresh) ? (fresh as Trade[]) : []);
+              setOpenTrades(Array.isArray(fresh) ? fresh : []);
             } catch {}
+            void refreshDashboard();
+          }}
+        />
+      )}
+      {scaling && (
+        <ScaleTradeDialog
+          trade={scaling}
+          onClose={() => setScaling(null)}
+          onScaled={(updated) => {
+            setOpenTrades((prev) => {
+              const u = updated;
+              // if fully closed after scaling out, remove from OPEN list
+              if (String(u.status || "").toUpperCase() === "CLOSED") return prev.filter((t) => String(t.id) !== String(u.id));
+              return prev.map((t) => (String(t.id) === String(u.id) ? u : t));
+            });
             void refreshDashboard();
           }}
         />
