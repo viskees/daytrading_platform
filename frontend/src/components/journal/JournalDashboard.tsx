@@ -40,6 +40,20 @@ function pnlClass(v?: number) {
   return v > 0 ? "text-emerald-600" : v < 0 ? "text-rose-600" : "text-zinc-600";
 }
 
+function fmtMoney(v: any) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtPx(v: any) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  // keep trader-friendly precision (don’t force 4dp if it’s clean)
+  const s = n.toFixed(4);
+  return s.replace(/\.?0+$/, "");
+}
+
 /* ─────────────────────────────────────────
    Data fetchers (use normalized api.ts)
    ───────────────────────────────────────── */
@@ -245,19 +259,49 @@ function TradeDetailSheet({
 
   const imgs = useMemo(() => sorted.map((a) => ({ src: a.image, alt: a.caption })), [sorted]);
 
+  const commEntry = trade?.commissionEntryTotal ?? trade?.commissionEntry;
+  const commExit = trade?.commissionExitTotal ?? trade?.commissionExit;
+  const commTotal =
+    trade?.commissionTotal ??
+    (Number.isFinite(Number(commEntry)) || Number.isFinite(Number(commExit))
+      ? Number(commEntry ?? 0) + Number(commExit ?? 0)
+      : undefined);
+
+  const gross =
+    trade?.realizedGross != null
+      ? trade.realizedGross
+      : (trade?.realizedPnl != null && commTotal != null ? trade.realizedPnl + commTotal : null);
+
+  const showCommissionBlock =
+    (commTotal != null && Number(commTotal) !== 0) ||
+    (commEntry != null && Number(commEntry) !== 0) ||
+    (commExit != null && Number(commExit) !== 0) ||
+    trade?.realizedGross != null;
+
+
   return (
     <>
       <SlideOver open={open} onOpenChange={onOpenChange} title={`${trade?.ticker} · ${trade?.side}`}>
         <div className="grid gap-4">
           {/* Core stats */}
           <div className="grid grid-cols-2 gap-2">
-            <Stat label="Entry" value={trade?.entryPrice ?? "—"} />
-            <Stat label="Exit" value={trade?.exitPrice ?? "—"} />
+            <Stat label="Avg entry" value={fmtPx(trade?.entryPrice)} />
+            <Stat label="Avg exit" value={trade?.exitPrice == null ? "—" : fmtPx(trade?.exitPrice)} />
             <Stat label="Size" value={trade?.size ?? "—"} />
             <Stat label="P/L" value={<span className={pnlClass(trade?.realizedPnl)}>{(trade?.realizedPnl ?? 0).toFixed(2)}</span>} />
             <Stat label="R Multiple" value={trade?.rMultiple == null ? "—" : Number(trade?.rMultiple).toFixed(2)} />
             <Stat label="Time" value={`${hhmm(trade?.entryTime)}–${hhmm(trade?.exitTime)}`} />
           </div>
+
+          {/* Closed-trade commission breakdown (clean summary) */}
+          {showCommissionBlock ? (
+            <div className="grid grid-cols-2 gap-2">
+              <Stat label="Commission entry" value={commEntry == null ? "—" : `$${fmtMoney(commEntry)}`} />
+              <Stat label="Commission exit" value={commExit == null ? "—" : `$${fmtMoney(commExit)}`} />
+              <Stat label="Commission total" value={commTotal == null ? "—" : `$${fmtMoney(commTotal)}`} />
+              <Stat label="Gross P/L" value={gross == null ? "—" : `$${fmtMoney(gross)}`} />
+            </div>
+          ) : null}
 
           {/* Emotions */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

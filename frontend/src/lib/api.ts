@@ -45,8 +45,21 @@ type ApiTrade = {
   position_qty?: number;
   avg_entry_price?: number;
 
-  commission_entry?: number;
-  commission_exit?: number;
+  // scaling + reporting summary fields (computed server-side)
+  // (your serializer already exposes these)
+  vwap_entry?: number | null;
+  vwap_exit?: number | null;
+  total_entry_qty?: number | null;
+  total_exit_qty?: number | null;
+  max_position_qty?: number | null;
+  realized_gross?: number | null;
+  risk_dollars?: number | null;
+  r_multiple_gross_dollars?: number | null;
+  r_multiple_net_dollars?: number | null;
+
+  // commission fields (legacy + totals; API sometimes returns strings)
+  commission_entry?: number | string;
+  commission_exit?: number | string;
   commission_entry_total?: number | string;
   commission_exit_total?: number | string;
   commission_total?: number | string;
@@ -63,6 +76,10 @@ export type NormalizedTrade = {
   journal_day: number;
   ticker: string;
   side: "LONG" | "SHORT";
+  /**
+   * For OPEN trades: current remaining position size (positionQty)
+   * For CLOSED trades: maximum size reached during the trade (maxPositionQty)
+   */
   size?: number;
   entryPrice: number;
   stopLoss?: number | null;
@@ -79,6 +96,22 @@ export type NormalizedTrade = {
   // scaling (preferred for OPEN trades)
   positionQty?: number;
   avgEntryPrice?: number;
+
+  // scaling summary (preferred for CLOSED trades)
+  vwapEntry?: number | null;
+  vwapExit?: number | null;
+  totalEntryQty?: number | null;
+  totalExitQty?: number | null;
+  maxPositionQty?: number | null;
+
+  // commission + reporting (nice closed-trade UX)
+  commissionEntryTotal?: number;
+  commissionExitTotal?: number;
+  commissionTotal?: number;
+  realizedGross?: number | null;
+  riskDollars?: number | null;
+  rMultipleGrossDollars?: number | null;
+  rMultipleNetDollars?: number | null;
 
   commissionEntry?: number;
   commissionExit?: number;
@@ -355,16 +388,41 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     .map((t) => (t && typeof t === "object" ? t.name : t))
     .filter(Boolean);
 
+  const status: "OPEN" | "CLOSED" =
+    String(x.status || "OPEN").toUpperCase() === "CLOSED" ? "CLOSED" : "OPEN";
+
+  const positionQtyNum = toNumber((x as any).position_qty);
+  const maxPosQtyNum = toNumber((x as any).max_position_qty);
+  const qtyNum = toNumber(x.quantity) ?? 0;
+
+  const vwapEntryNum = toNumber((x as any).vwap_entry);
+  const vwapExitNum = toNumber((x as any).vwap_exit);
+
+  const commEntryTotalNum = toNumber((x as any).commission_entry_total);
+  const commExitTotalNum = toNumber((x as any).commission_exit_total);
+  const commTotalNum = toNumber((x as any).commission_total);
+
+
   // "quantity" is the original trade quantity; "position_qty" is the live remaining size.
   // For CLOSED trades, position_qty may be 0 even though realized PnL should be based on the filled/closed quantity.
   // For OPEN trades, position_qty is the current live size and is preferable for risk/position displays.
   const qtyForPnL =
-    x.status === "CLOSED"
-      ? Number(x.quantity || 0)
-      : Number((x.position_qty ?? x.quantity) || 0);
+    status === "CLOSED" ? Number(qtyNum || 0) : Number((positionQtyNum ?? qtyNum) || 0);
 
-  const entryNum = Number((x.avg_entry_price ?? x.entry_price));
-  const exitNum = x.exit_price != null ? Number(x.exit_price) : null;
+  // OPEN: avg_entry_price is what you want to show after scaling in (current cost basis)
+  // CLOSED: prefer fill-weighted entry/exit (vwap_entry/vwap_exit) for clean summary
+  const entryDisplayNum =
+    status === "OPEN"
+      ? Number((x.avg_entry_price ?? x.entry_price))
+      : Number((vwapEntryNum ?? x.entry_price ?? x.avg_entry_price));
+
+  const exitDisplayNum =
+    status === "CLOSED"
+      ? (x.exit_price != null ? Number(vwapExitNum ?? x.exit_price) : null)
+      : (x.exit_price != null ? Number(x.exit_price) : null);
+
+  const entryNum = entryDisplayNum;
+  const exitNum = exitDisplayNum;
   const stopNum = x.stop_price != null ? Number(x.stop_price) : null;
 
   let realizedPnlVal: number | undefined =
@@ -394,13 +452,17 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     journal_day: x.journal_day,
     ticker: x.ticker,
     side: x.side,
-    // keep size/entryPrice aligned with *current* position for OPEN trades
-    size: (x.position_qty ?? x.quantity) || undefined,
-    entryPrice: (x.avg_entry_price ?? x.entry_price),
+    // OPEN: remaining size. CLOSED: max size reached (better UX for scaled trades)
+    size:
+      status === "OPEN"
+        ? (positionQtyNum ?? qtyNum) || undefined
+        : (maxPosQtyNum ?? qtyNum) || undefined,
+
+    entryPrice: entryDisplayNum,
     stopLoss: x.stop_price ?? null,
     target: x.target_price ?? null,
-    exitPrice: x.exit_price ?? null,
-    status: x.status,
+    exitPrice: exitDisplayNum,
+    status,
     notes: x.notes || "",
     strategyTags: Array.from(new Set(tagNames)),
     entryTime: x.entry_time || x.created_at || new Date().toISOString(),
@@ -415,14 +477,35 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
       typeof (x as any).avg_entry_price === "number"
         ? (x as any).avg_entry_price
         : undefined,
+
+    // scaling summary
+    vwapEntry: vwapEntryNum ?? null,
+    vwapExit: vwapExitNum ?? null,
+    totalEntryQty: toNumber((x as any).total_entry_qty) ?? null,
+    totalExitQty: toNumber((x as any).total_exit_qty) ?? null,
+    maxPositionQty: maxPosQtyNum ?? null,
+
+    // commissions + reporting
+    commissionEntryTotal: commEntryTotalNum,
+    commissionExitTotal: commExitTotalNum,
+    commissionTotal:
+      commTotalNum ??
+      (Number.isFinite(Number(commEntryTotalNum)) || Number.isFinite(Number(commExitTotalNum))
+        ? Number((commEntryTotalNum ?? 0) + (commExitTotalNum ?? 0))
+        : undefined),
+    realizedGross: toNumber((x as any).realized_gross) ?? null,
+    riskDollars: toNumber((x as any).risk_dollars) ?? null,
+    rMultipleGrossDollars: toNumber((x as any).r_multiple_gross_dollars) ?? null,
+    rMultipleNetDollars: toNumber((x as any).r_multiple_net_dollars) ?? null,
+
     // Prefer fill-based totals if backend provides them (scaling-aware).
     // Fallback to legacy per-side fields.
     commissionEntry:
-      toNumber((x as any).commission_entry_total) ??
+      commEntryTotalNum ??
       toNumber((x as any).commission_entry) ??
       undefined,
     commissionExit:
-      toNumber((x as any).commission_exit_total) ??
+      commExitTotalNum ??
       toNumber((x as any).commission_exit) ??
       undefined,
     entryEmotion: x.entry_emotion ?? null,
