@@ -39,8 +39,30 @@ type ApiTrade = {
   realized_pnl?: number;
   r_multiple?: number | null;
 
-  commission_entry?: number;
-  commission_exit?: number;
+  // scaling fields (server-calculated / canonical)
+  // - position_qty: remaining shares/contracts (open size)
+  // - avg_entry_price: weighted average entry after adds
+  position_qty?: number;
+  avg_entry_price?: number;
+
+  // scaling + reporting summary fields (computed server-side)
+  // (your serializer already exposes these)
+  vwap_entry?: number | null;
+  vwap_exit?: number | null;
+  total_entry_qty?: number | null;
+  total_exit_qty?: number | null;
+  max_position_qty?: number | null;
+  realized_gross?: number | null;
+  risk_dollars?: number | null;
+  r_multiple_gross_dollars?: number | null;
+  r_multiple_net_dollars?: number | null;
+
+  // commission fields (legacy + totals; API sometimes returns strings)
+  commission_entry?: number | string;
+  commission_exit?: number | string;
+  commission_entry_total?: number | string;
+  commission_exit_total?: number | string;
+  commission_total?: number | string;
 
   // emotion fields (server optional)
   entry_emotion?: "NEUTRAL" | "BIASED" | null;
@@ -54,6 +76,10 @@ export type NormalizedTrade = {
   journal_day: number;
   ticker: string;
   side: "LONG" | "SHORT";
+  /**
+   * For OPEN trades: current remaining position size (positionQty)
+   * For CLOSED trades: maximum size reached during the trade (maxPositionQty)
+   */
   size?: number;
   entryPrice: number;
   stopLoss?: number | null;
@@ -66,6 +92,26 @@ export type NormalizedTrade = {
   exitTime?: string | null;
   realizedPnl?: number;
   rMultiple?: number | null;
+
+  // scaling (preferred for OPEN trades)
+  positionQty?: number;
+  avgEntryPrice?: number;
+
+  // scaling summary (preferred for CLOSED trades)
+  vwapEntry?: number | null;
+  vwapExit?: number | null;
+  totalEntryQty?: number | null;
+  totalExitQty?: number | null;
+  maxPositionQty?: number | null;
+
+  // commission + reporting (nice closed-trade UX)
+  commissionEntryTotal?: number;
+  commissionExitTotal?: number;
+  commissionTotal?: number;
+  realizedGross?: number | null;
+  riskDollars?: number | null;
+  rMultipleGrossDollars?: number | null;
+  rMultipleNetDollars?: number | null;
 
   commissionEntry?: number;
   commissionExit?: number;
@@ -82,6 +128,16 @@ export type NormalizedTrade = {
 /* ----------------------- Small utilities ------------------------------ */
 function toArray<T>(x: unknown): T[] {
   return Array.isArray(x) ? (x as T[]) : [];
+}
+
+function toNumber(v: unknown): number | undefined {
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
 }
 
 function todayISO() {
@@ -332,9 +388,41 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     .map((t) => (t && typeof t === "object" ? t.name : t))
     .filter(Boolean);
 
-  const qtyNum = Number(x.quantity || 0);
-  const entryNum = Number(x.entry_price);
-  const exitNum = x.exit_price != null ? Number(x.exit_price) : null;
+  const status: "OPEN" | "CLOSED" =
+    String(x.status || "OPEN").toUpperCase() === "CLOSED" ? "CLOSED" : "OPEN";
+
+  const positionQtyNum = toNumber((x as any).position_qty);
+  const maxPosQtyNum = toNumber((x as any).max_position_qty);
+  const qtyNum = toNumber(x.quantity) ?? 0;
+
+  const vwapEntryNum = toNumber((x as any).vwap_entry);
+  const vwapExitNum = toNumber((x as any).vwap_exit);
+
+  const commEntryTotalNum = toNumber((x as any).commission_entry_total);
+  const commExitTotalNum = toNumber((x as any).commission_exit_total);
+  const commTotalNum = toNumber((x as any).commission_total);
+
+
+  // "quantity" is the original trade quantity; "position_qty" is the live remaining size.
+  // For CLOSED trades, position_qty may be 0 even though realized PnL should be based on the filled/closed quantity.
+  // For OPEN trades, position_qty is the current live size and is preferable for risk/position displays.
+  const qtyForPnL =
+    status === "CLOSED" ? Number(qtyNum || 0) : Number((positionQtyNum ?? qtyNum) || 0);
+
+  // OPEN: avg_entry_price is what you want to show after scaling in (current cost basis)
+  // CLOSED: prefer fill-weighted entry/exit (vwap_entry/vwap_exit) for clean summary
+  const entryDisplayNum =
+    status === "OPEN"
+      ? Number((x.avg_entry_price ?? x.entry_price))
+      : Number((vwapEntryNum ?? x.entry_price ?? x.avg_entry_price));
+
+  const exitDisplayNum =
+    status === "CLOSED"
+      ? (x.exit_price != null ? Number(vwapExitNum ?? x.exit_price) : null)
+      : (x.exit_price != null ? Number(x.exit_price) : null);
+
+  const entryNum = entryDisplayNum;
+  const exitNum = exitDisplayNum;
   const stopNum = x.stop_price != null ? Number(x.stop_price) : null;
 
   let realizedPnlVal: number | undefined =
@@ -343,10 +431,10 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     realizedPnlVal === undefined &&
     exitNum !== null &&
     Number.isFinite(entryNum) &&
-    Number.isFinite(qtyNum)
+    Number.isFinite(qtyForPnL)
   ) {
     const move = exitNum - entryNum;
-    realizedPnlVal = (x.side === "SHORT" ? -move : move) * qtyNum;
+    realizedPnlVal = (x.side === "SHORT" ? -move : move) * qtyForPnL;
   }
 
   let rMultipleVal: number | null =
@@ -364,22 +452,62 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     journal_day: x.journal_day,
     ticker: x.ticker,
     side: x.side,
-    size: x.quantity || undefined,
-    entryPrice: x.entry_price,
+    // OPEN: remaining size. CLOSED: max size reached (better UX for scaled trades)
+    size:
+      status === "OPEN"
+        ? (positionQtyNum ?? qtyNum) || undefined
+        : (maxPosQtyNum ?? qtyNum) || undefined,
+
+    entryPrice: entryDisplayNum,
     stopLoss: x.stop_price ?? null,
     target: x.target_price ?? null,
-    exitPrice: x.exit_price ?? null,
-    status: x.status,
+    exitPrice: exitDisplayNum,
+    status,
     notes: x.notes || "",
     strategyTags: Array.from(new Set(tagNames)),
     entryTime: x.entry_time || x.created_at || new Date().toISOString(),
     exitTime: x.exit_time ?? undefined,
     realizedPnl: realizedPnlVal,
     rMultiple: rMultipleVal,
+    positionQty:
+      typeof (x as any).position_qty === "number"
+        ? (x as any).position_qty
+        : undefined,
+    avgEntryPrice:
+      typeof (x as any).avg_entry_price === "number"
+        ? (x as any).avg_entry_price
+        : undefined,
+
+    // scaling summary
+    vwapEntry: vwapEntryNum ?? null,
+    vwapExit: vwapExitNum ?? null,
+    totalEntryQty: toNumber((x as any).total_entry_qty) ?? null,
+    totalExitQty: toNumber((x as any).total_exit_qty) ?? null,
+    maxPositionQty: maxPosQtyNum ?? null,
+
+    // commissions + reporting
+    commissionEntryTotal: commEntryTotalNum,
+    commissionExitTotal: commExitTotalNum,
+    commissionTotal:
+      commTotalNum ??
+      (Number.isFinite(Number(commEntryTotalNum)) || Number.isFinite(Number(commExitTotalNum))
+        ? Number((commEntryTotalNum ?? 0) + (commExitTotalNum ?? 0))
+        : undefined),
+    realizedGross: toNumber((x as any).realized_gross) ?? null,
+    riskDollars: toNumber((x as any).risk_dollars) ?? null,
+    rMultipleGrossDollars: toNumber((x as any).r_multiple_gross_dollars) ?? null,
+    rMultipleNetDollars: toNumber((x as any).r_multiple_net_dollars) ?? null,
+
+    // Prefer fill-based totals if backend provides them (scaling-aware).
+    // Fallback to legacy per-side fields.
     commissionEntry:
-      typeof (x as any).commission_entry === "number" ? (x as any).commission_entry : undefined,
+      commEntryTotalNum ??
+      toNumber((x as any).commission_entry) ??
+      undefined,
     commissionExit:
-      typeof (x as any).commission_exit === "number" ? (x as any).commission_exit : undefined,
+      commExitTotalNum ??
+      toNumber((x as any).commission_exit) ??
+      undefined,
     entryEmotion: x.entry_emotion ?? null,
     entryEmotionNote: x.entry_emotion_note ?? "",
     exitEmotion: x.exit_emotion ?? null,
@@ -598,6 +726,43 @@ export async function closeTrade(
     });
   } catch {}
 
+  return normalizeTradeAsync(json);
+}
+
+
+/* ---------------------------- Scaling -------------------------------- */
+export async function scaleTrade(
+  id: number | string,
+  payload: {
+    direction: "IN" | "OUT"; // required by backend
+    quantity: number;        // must be >= 1 (positive)
+    price?: number | null; // optional; server can default to last/entry
+    note?: string;         // optional note for the scale action
+  }
+): Promise<NormalizedTrade> {
+  const q = Number(payload.quantity);
+  if (!Number.isFinite(q) || q < 1) {
+    throw new Error("Please provide a quantity >= 1 for scaling.");
+  }
+  if (payload.direction !== "IN" && payload.direction !== "OUT") {
+    throw new Error("Scale direction must be IN or OUT.");
+  }
+
+  const body: any = { direction: payload.direction, quantity: Math.round(q) };
+  if (payload.price != null && Number.isFinite(Number(payload.price))) {
+    body.price = Number(payload.price);
+  }
+  if (payload.note !== undefined) body.note = String(payload.note ?? "");
+
+  const res = await apiFetch(`/journal/trades/${id}/scale/`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    throw new Error(msg || "Scale trade failed");
+  }
+  const json: ApiTrade = await res.json();
   return normalizeTradeAsync(json);
 }
 

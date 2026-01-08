@@ -24,6 +24,12 @@ function minusDays(d: Date, n: number) {
   x.setDate(x.getDate() - n);
   return x;
 }
+function dmy(dt: Date) {
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const yyyy = dt.getFullYear();
+  return `${dd}-${mm}-${yyyy}`;
+}
 function hhmm(iso?: string | null) {
   if (!iso) return "—";
   try {
@@ -35,9 +41,49 @@ function hhmm(iso?: string | null) {
     return "—";
   }
 }
+
+function formatTradeTimeRange(entryISO?: string | null, exitISO?: string | null) {
+  if (!entryISO) return "—";
+  try {
+    const entry = new Date(entryISO);
+    const entryLabel = `${dmy(entry)} ${hhmm(entryISO)}`;
+
+    if (!exitISO) return entryLabel;
+
+    const exit = new Date(exitISO);
+    const sameDay =
+      entry.getFullYear() === exit.getFullYear() &&
+      entry.getMonth() === exit.getMonth() &&
+      entry.getDate() === exit.getDate();
+
+    if (sameDay) {
+      // Same-day: "08-01-2026 21:11–21:13"
+      return `${dmy(entry)} ${hhmm(entryISO)}–${hhmm(exitISO)}`;
+    }
+
+    // Overnight: "08-01-2026 21:11 → 09-01-2026 07:30"
+    return `${dmy(entry)} ${hhmm(entryISO)} → ${dmy(exit)} ${hhmm(exitISO)}`;
+  } catch {
+    return "—";
+  }
+}
 function pnlClass(v?: number) {
   if (v == null) return "text-zinc-500";
   return v > 0 ? "text-emerald-600" : v < 0 ? "text-rose-600" : "text-zinc-600";
+}
+
+function fmtMoney(v: any) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtPx(v: any) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  // keep trader-friendly precision (don’t force 4dp if it’s clean)
+  const s = n.toFixed(4);
+  return s.replace(/\.?0+$/, "");
 }
 
 /* ─────────────────────────────────────────
@@ -245,19 +291,49 @@ function TradeDetailSheet({
 
   const imgs = useMemo(() => sorted.map((a) => ({ src: a.image, alt: a.caption })), [sorted]);
 
+  const commEntry = trade?.commissionEntryTotal ?? trade?.commissionEntry;
+  const commExit = trade?.commissionExitTotal ?? trade?.commissionExit;
+  const commTotal =
+    trade?.commissionTotal ??
+    (Number.isFinite(Number(commEntry)) || Number.isFinite(Number(commExit))
+      ? Number(commEntry ?? 0) + Number(commExit ?? 0)
+      : undefined);
+
+  const gross =
+    trade?.realizedGross != null
+      ? trade.realizedGross
+      : (trade?.realizedPnl != null && commTotal != null ? trade.realizedPnl + commTotal : null);
+
+  const showCommissionBlock =
+    (commTotal != null && Number(commTotal) !== 0) ||
+    (commEntry != null && Number(commEntry) !== 0) ||
+    (commExit != null && Number(commExit) !== 0) ||
+    trade?.realizedGross != null;
+
+
   return (
     <>
       <SlideOver open={open} onOpenChange={onOpenChange} title={`${trade?.ticker} · ${trade?.side}`}>
         <div className="grid gap-4">
           {/* Core stats */}
           <div className="grid grid-cols-2 gap-2">
-            <Stat label="Entry" value={trade?.entryPrice ?? "—"} />
-            <Stat label="Exit" value={trade?.exitPrice ?? "—"} />
+            <Stat label="Avg entry" value={fmtPx(trade?.entryPrice)} />
+            <Stat label="Avg exit" value={trade?.exitPrice == null ? "—" : fmtPx(trade?.exitPrice)} />
             <Stat label="Size" value={trade?.size ?? "—"} />
             <Stat label="P/L" value={<span className={pnlClass(trade?.realizedPnl)}>{(trade?.realizedPnl ?? 0).toFixed(2)}</span>} />
             <Stat label="R Multiple" value={trade?.rMultiple == null ? "—" : Number(trade?.rMultiple).toFixed(2)} />
-            <Stat label="Time" value={`${hhmm(trade?.entryTime)}–${hhmm(trade?.exitTime)}`} />
+            <Stat label="Time" value={formatTradeTimeRange(trade?.entryTime, trade?.exitTime)} />
           </div>
+
+          {/* Closed-trade commission breakdown (clean summary) */}
+          {showCommissionBlock ? (
+            <div className="grid grid-cols-2 gap-2">
+              <Stat label="Commission entry" value={commEntry == null ? "—" : `$${fmtMoney(commEntry)}`} />
+              <Stat label="Commission exit" value={commExit == null ? "—" : `$${fmtMoney(commExit)}`} />
+              <Stat label="Commission total" value={commTotal == null ? "—" : `$${fmtMoney(commTotal)}`} />
+              <Stat label="Gross P/L" value={gross == null ? "—" : `$${fmtMoney(gross)}`} />
+            </div>
+          ) : null}
 
           {/* Emotions */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

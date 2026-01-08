@@ -7,9 +7,11 @@ from rest_framework.serializers import ValidationError
 from django_filters.rest_framework import DjangoFilterBackend
 
 from django.utils import timezone
+
 from django.utils.timezone import now
 from datetime import datetime
 from decimal import Decimal
+from django.db import transaction
 
 from django.db.models import (
     Q,
@@ -30,6 +32,7 @@ from django.db.models.functions import TruncDate
 from .models import (
     JournalDay,
     Trade,
+    TradeFill,
     StrategyTag,
     Attachment,
     UserSettings,
@@ -39,6 +42,7 @@ from .serializers import (
     UserSettingsSerializer,
     JournalDaySerializer,
     TradeSerializer,
+    TradeScaleSerializer,
     StrategyTagSerializer,
     AttachmentSerializer,
     AccountAdjustmentSerializer,
@@ -326,6 +330,148 @@ class TradeViewSet(viewsets.ModelViewSet):
 
         serializer.save(user=self.request.user, entry_time=timezone.now())
 
+    # ---------------------------
+    # Scaling / fills helpers
+    # ---------------------------
+    def _ensure_aware_dt(self, dt):
+        if dt is None:
+            return timezone.now()
+        if timezone.is_naive(dt):
+            return timezone.make_aware(dt, timezone.get_current_timezone())
+        return dt
+
+    def _ensure_bootstrap_entry_fill(self, trade: Trade):
+        """
+        If a legacy trade has no fills yet, create an initial entry fill from legacy entry fields.
+        Safe to call repeatedly.
+        """
+        if not hasattr(trade, "fills"):
+            return
+        if trade.fills.exists():
+            return
+        if trade.quantity and trade.entry_price and trade.entry_time:
+            bootstrap_action = TradeFill.ACTION_BUY if trade.side == "LONG" else TradeFill.ACTION_SELL
+            TradeFill.objects.create(
+                trade=trade,
+                timestamp=trade.entry_time,
+                action=bootstrap_action,
+                quantity=int(trade.quantity),
+                price=Decimal(str(trade.entry_price)),
+                commission=Decimal(str(trade.commission_entry or 0)).quantize(Decimal("0.01")),
+                note="(bootstrap from legacy entry)",
+            )
+
+    def _reattach_to_exit_day(self, trade: Trade, user, exit_time):
+        exit_time = self._ensure_aware_dt(exit_time)
+        exit_date = timezone.localdate(exit_time)
+        jd, _ = get_or_create_journal_day_with_carry(user, exit_date)
+        trade.journal_day = jd
+
+    def _sync_legacy_fields_from_fills(self, trade: Trade, fallback_exit_price=None):
+        """
+        Keep legacy fields consistent for older UI/reporting after scaling/fills.
+        """
+        vwap_entry = trade.vwap_entry
+        vwap_exit = trade.vwap_exit
+        max_qty = trade.max_position_qty
+
+        if vwap_entry is not None:
+            trade.entry_price = Decimal(str(vwap_entry))
+
+        if vwap_exit is not None:
+            trade.exit_price = Decimal(str(vwap_exit))
+        elif fallback_exit_price is not None:
+            trade.exit_price = Decimal(str(fallback_exit_price))
+
+        if max_qty and int(max_qty) > 0:
+            trade.quantity = int(max_qty)
+
+        # Commission compatibility: store entry/exit totals from fills
+        try:
+            trade.commission_entry = Decimal(str(trade.commission_entry_total or 0)).quantize(Decimal("0.01"))
+            trade.commission_exit = Decimal(str(trade.commission_exit_total or 0)).quantize(Decimal("0.01"))
+        except Exception:
+            pass
+
+    def _close_trade_with_fills(
+        self,
+        *,
+        trade: Trade,
+        user,
+        exit_time,
+        exit_price,
+        note="(close remaining position)",
+        commission_override=None,
+    ):
+        """
+        Canonical close path for trades that may have fills (scaling).
+
+        - Ensures bootstrap fill exists for legacy trades
+        - If remaining position > 0, creates the final exit fill for the remaining qty
+        - Reattaches the trade to the JournalDay of local exit date
+        - Sets CLOSED + exit_time
+        - Syncs legacy fields (entry/exit VWAP, max size, commission totals)
+        """
+        exit_time = self._ensure_aware_dt(exit_time)
+        exit_price = Decimal(str(exit_price))
+
+        policy, _ = UserSettings.objects.get_or_create(user=user)
+
+        # If fills are in play, make sure we have an entry fill
+        if hasattr(trade, "fills"):
+            self._ensure_bootstrap_entry_fill(trade)
+
+        # Remaining position at time of close (computed from fills if present)
+        remaining = int(trade.position_qty or 0)
+
+        # Create final exit fill for remaining qty (only if needed)
+        if remaining > 0 and hasattr(trade, "fills"):
+            exit_action = TradeFill.ACTION_SELL if trade.side == "LONG" else TradeFill.ACTION_BUY
+
+            if commission_override is not None:
+                fill_commission = Decimal(str(commission_override or 0)).quantize(Decimal("0.01"))
+            else:
+                fill_commission = policy.commission_for_side(price=exit_price, quantity=remaining)
+
+            TradeFill.objects.create(
+                trade=trade,
+                timestamp=exit_time,
+                action=exit_action,
+                quantity=remaining,
+                price=exit_price,
+                commission=Decimal(str(fill_commission or 0)).quantize(Decimal("0.01")),
+                note=note,
+            )
+
+        # Refresh computed properties (position_qty, VWAPs, totals, etc.)
+        trade.refresh_from_db()
+
+        # Close + reattach
+        trade.status = "CLOSED"
+        trade.exit_time = exit_time
+        self._reattach_to_exit_day(trade, user, exit_time)
+
+        # Keep legacy fields consistent with fills
+        if hasattr(trade, "fills") and trade.fills.exists():
+            self._sync_legacy_fields_from_fills(trade, fallback_exit_price=exit_price)
+        else:
+            # Non-fill trade: just set last known exit
+            trade.exit_price = exit_price
+
+        trade.save(
+            update_fields=[
+                "journal_day",
+                "status",
+                "exit_time",
+                "entry_price",
+                "exit_price",
+                "quantity",
+                "commission_entry",
+                "commission_exit",
+            ]
+        )
+
+
     def perform_update(self, serializer):
         day = serializer.validated_data.get("journal_day", serializer.instance.journal_day)
         if day.user_id != self.request.user.id:
@@ -335,6 +481,160 @@ class TradeViewSet(viewsets.ModelViewSet):
         # If client sets status CLOSED but didn't send exit_time, set it now
         if trade.status == "CLOSED" and not trade.exit_time:
             trade.close(exit_price=trade.exit_price)  # will set exit_time=now()
+    
+    @action(detail=True, methods=["post"])
+    def scale(self, request, pk=None):
+        """
+        POST /api/journal/trades/{id}/scale/
+        Body:
+          {
+            direction: "IN" | "OUT",
+            quantity: int (>0),
+            price: decimal (>0),
+            timestamp?: datetime (defaults to now),
+            note?: str,
+            commission?: decimal (optional override)
+          }
+
+        Behavior:
+        - Bootstraps initial TradeFill for legacy trades (no fills yet) using entry fields.
+        - Creates a new TradeFill for the requested scale.
+        - Validates ownership + OPEN status + scale-out <= remaining position.
+        - Enforces no "flip" by disallowing scale-out beyond remaining.
+        - On flat (remaining qty == 0): auto-close trade, set exit_time, exit_price, status,
+          and reattach trade to JournalDay of the local exit date (overnight-safe).
+        """
+        trade: Trade = self.get_object()  # object perms apply (IsOwnerOfTrade)
+        if trade.user_id != request.user.id:
+            raise PermissionDenied("Forbidden")
+
+        if trade.status != "OPEN":
+            return Response(
+                {"code": "TRADE_NOT_OPEN", "detail": "Only OPEN trades can be scaled."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        in_ser = TradeScaleSerializer(data=request.data, context={"request": request})
+        in_ser.is_valid(raise_exception=True)
+        direction = in_ser.validated_data["direction"]
+        qty = int(in_ser.validated_data["quantity"])
+        price = Decimal(str(in_ser.validated_data["price"]))
+        ts = in_ser.validated_data.get("timestamp") or timezone.now()
+        note = in_ser.validated_data.get("note", "") or ""
+        commission_override = in_ser.validated_data.get("commission", None)
+
+        # Ensure tz-aware timestamp (DRF typically gives aware if USE_TZ=True)
+        if timezone.is_naive(ts):
+            ts = timezone.make_aware(ts, timezone.get_current_timezone())
+
+        # Decide BUY/SELL action based on trade.side and direction.
+        # LONG: IN=BUY, OUT=SELL
+        # SHORT: IN=SELL, OUT=BUY
+        if trade.side == "LONG":
+            action = TradeFill.ACTION_BUY if direction == TradeScaleSerializer.DIRECTION_IN else TradeFill.ACTION_SELL
+        else:
+            action = TradeFill.ACTION_SELL if direction == TradeScaleSerializer.DIRECTION_IN else TradeFill.ACTION_BUY
+
+        # Commission per fill: default compute from user policy unless override provided.
+        policy, _ = UserSettings.objects.get_or_create(user=request.user)
+        if commission_override is not None:
+            fill_commission = Decimal(str(commission_override or 0)).quantize(Decimal("0.01"))
+        else:
+            fill_commission = policy.commission_for_side(price=price, quantity=qty)
+
+        with transaction.atomic():
+            # --- Bootstrap: if no fills exist, create initial entry fill from legacy fields ---
+            self._ensure_bootstrap_entry_fill(trade)
+
+            # Current remaining position (after bootstrap)
+            remaining = int(trade.position_qty or 0)
+
+            # Validate scale-out does not exceed remaining
+            if direction == TradeScaleSerializer.DIRECTION_OUT:
+                if remaining <= 0:
+                    return Response(
+                        {"code": "NO_POSITION", "detail": "Cannot scale out: position is already flat."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if qty > remaining:
+                    return Response(
+                        {
+                            "code": "SCALE_OUT_TOO_LARGE",
+                            "detail": f"Cannot scale out {qty}; remaining position is {remaining}.",
+                            "data": {"remaining_qty": remaining, "requested_qty": qty},
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+            # Risk check on scale-in (mirrors create logic; does not block scale-out / closes)
+            if direction == TradeScaleSerializer.DIRECTION_IN:
+                try:
+                    day = trade.journal_day
+                    effective_equity = float(day.effective_equity or 0.0)
+                    stop = trade.stop_price
+                    if (
+                        effective_equity > 0
+                        and stop is not None
+                        and policy.max_risk_per_trade_pct is not None
+                    ):
+                        new_qty = remaining + qty
+                        rps = abs(float(price) - float(stop))  # use this fill's price as incremental entry reference
+                        # More conservative: use trade.avg_entry_price if available after fill; but we check pre-fill.
+                        if rps > 0:
+                            per_trade_risk = rps * float(new_qty)
+                            per_trade_risk_pct = (per_trade_risk / effective_equity) * 100.0
+                            if float(per_trade_risk_pct) > float(policy.max_risk_per_trade_pct):
+                                detail = {
+                                    "code": "RISK_VIOLATION_PER_TRADE",
+                                    "detail": (
+                                        f"Per-trade risk {per_trade_risk_pct:.2f}% exceeds "
+                                        f"max {float(policy.max_risk_per_trade_pct):.2f}%."
+                                    ),
+                                    "data": {
+                                        "per_trade_risk_pct": round(per_trade_risk_pct, 4),
+                                        "max_risk_per_trade_pct": float(policy.max_risk_per_trade_pct),
+                                        "new_quantity": int(new_qty),
+                                        "price": float(price),
+                                        "stop_price": float(stop),
+                                        "effective_equity": effective_equity,
+                                    },
+                                }
+                                raise Conflict(detail)
+                except Conflict:
+                    raise
+                except Exception:
+                    # never hard-fail on numeric weirdness
+                    pass
+
+            # Create the scale fill
+            TradeFill.objects.create(
+                trade=trade,
+                timestamp=ts,
+                action=action,
+                quantity=qty,
+                price=price,
+                commission=fill_commission,
+                note=note,
+            )
+
+            # Refresh trade computations (properties read from DB)
+            trade.refresh_from_db()
+
+            # Auto-close if flat after scaling
+            if int(trade.position_qty or 0) == 0:
+                # Position already flat; no extra exit fill needed here.
+                # We still need to reattach to the correct day + sync legacy fields.
+                self._close_trade_with_fills(
+                    trade=trade,
+                    user=request.user,
+                    exit_time=ts,
+                    exit_price=price,
+                    note="(auto-close on flat after scale)",
+                    commission_override=None,
+                )
+
+        return Response(self.get_serializer(trade).data, status=status.HTTP_200_OK)
+
 
     @action(detail=False, methods=["get"], url_path="status/today")
     def status_today(self, request):
@@ -503,9 +803,32 @@ class TradeViewSet(viewsets.ModelViewSet):
         data = request.data.copy()
         data["status"] = "CLOSED"
 
+        # If caller didn't provide exit_time, inject "now" so this endpoint is a complete close.
+        # (Avoids legacy close() behavior elsewhere that doesn't create fills/commissions.)
+        if not data.get("exit_time"):
+            data["exit_time"] = timezone.now().isoformat()
+
         serializer = self.get_serializer(trade, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+
+        with transaction.atomic():
+            trade = serializer.save()
+
+            # If scaling/fills exist, create the final close fill for remaining position (if any),
+            # then sync legacy commission fields so the journal displays correctly.
+            if hasattr(trade, "fills") and trade.fills.exists():
+                self._close_trade_with_fills(
+                    trade=trade,
+                    user=request.user,
+                    exit_time=trade.exit_time or timezone.now(),
+                    exit_price=trade.exit_price,
+                    note="(close via close endpoint)",
+                    commission_override=None,
+                )
+            else:
+                # Non-fill trade: still reattach to correct exit day (overnight safe)
+                self._reattach_to_exit_day(trade, request.user, trade.exit_time or timezone.now())
+                trade.save(update_fields=["journal_day"])
 
         return Response(self.get_serializer(trade).data)
 
@@ -610,60 +933,30 @@ class PnLViewSet(viewsets.ViewSet):
         except ValueError:
             return Response({"detail": "Invalid date format."}, status=400)
 
-        # Robust PnL expression computed from prices * quantity.
-        # LONG:  (exit - entry) * qty
-        # SHORT: (entry - exit) * qty  ==  - (exit - entry) * qty
-        price_move = F("exit_price") - F("entry_price")
-        signed_move = Case(
-            When(side="SHORT", then=-price_move),
-            default=price_move,
-            output_field=FloatField(),
-        )
-        gross_pnl_expr = ExpressionWrapper(
-            signed_move * F("quantity"),
-            output_field=FloatField(),
-        )
+        # NOTE: With scaling (TradeFill), SQL expressions over entry/exit fields become incorrect.
+        # We compute per-trade NET P/L using the model property `realized_pnl` (supports fills),
+        # then aggregate per day in Python for correctness.
 
-        # NET: subtract stored commissions (both sides)
-        net_pnl_expr = ExpressionWrapper(
-            gross_pnl_expr - F("commission_entry") - F("commission_exit"),
-            output_field=FloatField(),
-        )
-
-        # Aggregate per calendar day (by exit_time date). We compute PL and trade count in SQL.
-        base = (
-            Trade.objects.filter(
-                user=request.user,
-                status="CLOSED",
-                journal_day__date__gte=start_date,
-                journal_day__date__lte=end_date,
-            )
-            .values("journal_day__date")
-            .annotate(
-                trades=Count("id"),
-                pl=Sum(net_pnl_expr, output_field=FloatField()),
-            )
-            .order_by("journal_day__date")
-        )
-
-        # For R-metrics (avg/best/worst & win_rate), compute in Python to avoid relying
-        # on a stored DB column. We accept either model field `r` or property `r_multiple`.
         out = []
-        for row in base:
-            day = row["journal_day__date"]
-            trades_count = int(row.get("trades") or 0)
-            pl_val = float(row.get("pl") or 0.0)
-
-            # Pull the day's trades to compute R metrics safely in Python.
+        cursor = start_date
+        while cursor <= end_date:
             day_trades = Trade.objects.filter(
                 user=request.user,
                 status="CLOSED",
-                journal_day__date=day,
+                journal_day__date=cursor,
             )
+
+            trades_count = day_trades.count()
+            pl_val = 0.0
             r_list = []
             wins = 0
+
             for t in day_trades:
-                # prefer DB field `r`, else property `r_multiple`, else 0.0
+                try:
+                    pl_val += float(t.realized_pnl or 0.0)
+                except Exception:
+                    pass
+
                 r_val = getattr(t, "r", None)
                 if r_val is None:
                     r_val = getattr(t, "r_multiple", None)
@@ -688,7 +981,7 @@ class PnLViewSet(viewsets.ViewSet):
 
             out.append(
                 {
-                    "date": day.isoformat(),
+                    "date": cursor.isoformat(),
                     "pl": round(pl_val, 2),
                     "trades": trades_count,
                     "win_rate": round(win_rate, 2),
@@ -698,5 +991,7 @@ class PnLViewSet(viewsets.ViewSet):
                     "max_dd_pct": 0.0,  # placeholder; can be computed from equity path
                 }
             )
+            from datetime import timedelta
+            cursor = cursor + timedelta(days=1)
 
         return Response(out)

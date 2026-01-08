@@ -3,6 +3,7 @@ from rest_framework import serializers
 from .models import (
     JournalDay,
     Trade,
+    TradeFill,
     StrategyTag,
     Attachment,
     UserSettings,
@@ -71,6 +72,50 @@ class AttachmentSerializer(serializers.ModelSerializer):
             data["image"] = request.build_absolute_uri(img)
         return data
 
+class TradeFillSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TradeFill
+        fields = [
+            "id",
+            "trade",
+            "timestamp",
+            "action",
+            "quantity",
+            "price",
+            "commission",
+            "note",
+        ]
+        read_only_fields = ["id", "trade", "timestamp", "action", "quantity", "price", "commission", "note"]
+
+
+class TradeScaleSerializer(serializers.Serializer):
+    """
+    Input serializer for POST /trades/{id}/scale/
+    """
+    DIRECTION_IN = "IN"
+    DIRECTION_OUT = "OUT"
+    DIRECTION_CHOICES = (
+        (DIRECTION_IN, "Scale in"),
+        (DIRECTION_OUT, "Scale out"),
+    )
+
+    direction = serializers.ChoiceField(choices=DIRECTION_CHOICES)
+    quantity = serializers.IntegerField(min_value=1)
+    price = serializers.DecimalField(max_digits=10, decimal_places=4)
+    timestamp = serializers.DateTimeField(required=False, allow_null=True)
+    commission = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_price(self, val):
+        try:
+            if Decimal(str(val)) <= 0:
+                raise serializers.ValidationError("Must be greater than zero.")
+        except Exception:
+            raise serializers.ValidationError("Invalid price.")
+        return val
+
+
+
 
 class TradeSerializer(serializers.ModelSerializer):
     # READ: tags as [{id,name}]
@@ -88,6 +133,21 @@ class TradeSerializer(serializers.ModelSerializer):
     r_multiple = serializers.FloatField(read_only=True)
     # expose realized P/L computed property from model
     realized_pnl = serializers.FloatField(read_only=True)
+    # scaling-derived fields (computed properties)
+    position_qty = serializers.IntegerField(read_only=True)
+    avg_entry_price = serializers.FloatField(read_only=True)
+    vwap_entry = serializers.FloatField(read_only=True)
+    vwap_exit = serializers.FloatField(read_only=True)
+    total_entry_qty = serializers.IntegerField(read_only=True)
+    total_exit_qty = serializers.IntegerField(read_only=True)
+    max_position_qty = serializers.IntegerField(read_only=True)
+    commission_total = serializers.FloatField(read_only=True)
+    commission_entry_total = serializers.FloatField(read_only=True)
+    commission_exit_total = serializers.FloatField(read_only=True)
+    realized_gross = serializers.FloatField(read_only=True)
+    risk_dollars = serializers.FloatField(read_only=True)
+    r_multiple_gross_dollars = serializers.FloatField(read_only=True)
+    r_multiple_net_dollars = serializers.FloatField(read_only=True)
     commission_entry = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     commission_exit = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     # allow client to set explicit exit_time when closing (server may also set default)
@@ -125,6 +185,20 @@ class TradeSerializer(serializers.ModelSerializer):
             "risk_per_share",
             "r_multiple",
             "realized_pnl",
+            "position_qty",
+            "avg_entry_price",
+            "vwap_entry",
+            "vwap_exit",
+            "total_entry_qty",
+            "total_exit_qty",
+            "max_position_qty",
+            "commission_total",
+            "commission_entry_total",
+            "commission_exit_total",
+            "realized_gross",
+            "risk_dollars",
+            "r_multiple_gross_dollars",
+            "r_multiple_net_dollars",
             "commission_entry",
             "commission_exit",
         ]
@@ -135,6 +209,20 @@ class TradeSerializer(serializers.ModelSerializer):
             "realized_pnl",
             "attachments",
             "strategy_tags",
+            "position_qty",
+            "avg_entry_price",
+            "vwap_entry",
+            "vwap_exit",
+            "total_entry_qty",
+            "total_exit_qty",
+            "max_position_qty",
+            "commission_total",
+            "commission_entry_total",
+            "commission_exit_total",
+            "realized_gross",
+            "risk_dollars",
+            "r_multiple_gross_dollars",
+            "r_multiple_net_dollars",
             "commission_entry",
             "commission_exit",
         ]

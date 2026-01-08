@@ -1,9 +1,10 @@
 roadmap
 - stocks tab becomes watchlist
 - scale in and out of a trade; on open trade panel, actions column
-- total market capital when opening a trade (<5000k --> low commission?)
-- commission field in risk settings --> percentage per share toevoegen
-- commission field when opening and closing a trade
+- community chat
 
 Done:
 - trade overnight - visible on the journal calendar (on closing date), but is not registered nor is it listed. session stats and account summary is not updated on the closure date as well
+- total market capital when opening a trade (<5000k --> low commission?)
+- commission field in risk settings --> percentage per share toevoegen
+- commission field when opening and closing a trade
