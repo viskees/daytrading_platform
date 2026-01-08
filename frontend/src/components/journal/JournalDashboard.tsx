@@ -24,6 +24,12 @@ function minusDays(d: Date, n: number) {
   x.setDate(x.getDate() - n);
   return x;
 }
+function dmy(dt: Date) {
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const yyyy = dt.getFullYear();
+  return `${dd}-${mm}-${yyyy}`;
+}
 function hhmm(iso?: string | null) {
   if (!iso) return "—";
   try {
@@ -31,6 +37,32 @@ function hhmm(iso?: string | null) {
     const h = String(dt.getHours()).padStart(2, "0");
     const m = String(dt.getMinutes()).padStart(2, "0");
     return `${h}:${m}`;
+  } catch {
+    return "—";
+  }
+}
+
+function formatTradeTimeRange(entryISO?: string | null, exitISO?: string | null) {
+  if (!entryISO) return "—";
+  try {
+    const entry = new Date(entryISO);
+    const entryLabel = `${dmy(entry)} ${hhmm(entryISO)}`;
+
+    if (!exitISO) return entryLabel;
+
+    const exit = new Date(exitISO);
+    const sameDay =
+      entry.getFullYear() === exit.getFullYear() &&
+      entry.getMonth() === exit.getMonth() &&
+      entry.getDate() === exit.getDate();
+
+    if (sameDay) {
+      // Same-day: "08-01-2026 21:11–21:13"
+      return `${dmy(entry)} ${hhmm(entryISO)}–${hhmm(exitISO)}`;
+    }
+
+    // Overnight: "08-01-2026 21:11 → 09-01-2026 07:30"
+    return `${dmy(entry)} ${hhmm(entryISO)} → ${dmy(exit)} ${hhmm(exitISO)}`;
   } catch {
     return "—";
   }
@@ -290,7 +322,7 @@ function TradeDetailSheet({
             <Stat label="Size" value={trade?.size ?? "—"} />
             <Stat label="P/L" value={<span className={pnlClass(trade?.realizedPnl)}>{(trade?.realizedPnl ?? 0).toFixed(2)}</span>} />
             <Stat label="R Multiple" value={trade?.rMultiple == null ? "—" : Number(trade?.rMultiple).toFixed(2)} />
-            <Stat label="Time" value={`${hhmm(trade?.entryTime)}–${hhmm(trade?.exitTime)}`} />
+            <Stat label="Time" value={formatTradeTimeRange(trade?.entryTime, trade?.exitTime)} />
           </div>
 
           {/* Closed-trade commission breakdown (clean summary) */}
