@@ -693,6 +693,7 @@ function ScaleTradeDialog({
   const [qty, setQty] = useState<number | "">("");
   const [price, setPrice] = useState<number | "">("");
   const [note, setNote] = useState("");
+  const [shots, setShots] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -820,6 +821,8 @@ function ScaleTradeDialog({
         price: effectivePrice,
         note,
       });
+      // Upload any screenshots after successful scale action
+      for (const f of shots) await apiCreateAttachment(trade.id, f);
       onScaled(updated);
       onClose();
     } catch (e: any) {
@@ -918,6 +921,9 @@ function ScaleTradeDialog({
         <div className="md:col-span-3">
           <div className="text-xs mb-1">Note (optional)</div>
           <Textarea value={note} onChange={(e) => setNote(e.target.value)} className="h-20" />
+        </div>
+        <div className="md:col-span-3">
+          <ImagePasteDrop files={shots} setFiles={setShots} label="Click or paste scale screenshot (Ctrl/Cmd+V)" />
         </div>
       </div>
 
