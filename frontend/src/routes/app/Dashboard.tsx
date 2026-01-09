@@ -694,6 +694,7 @@ function ScaleTradeDialog({
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Current live position + cost basis (preferred after scaling)
   const currentQty = Number(trade.positionQty ?? trade.size ?? 0);
   const entryPx = Number(trade.avgEntryPrice ?? trade.entryPrice ?? 0);
 
@@ -701,6 +702,18 @@ function ScaleTradeDialog({
     const q = Number(qty);
     if (!Number.isFinite(q) || q <= 0) {
       setErr("Enter a positive quantity.");
+      return;
+    }
+
+    // Backend currently expects a price. If user leaves it empty, use a deterministic fallback.
+    // We pick the current cost basis (avg entry for scaled trades, else entryPrice).
+    const effectivePrice =
+      price === "" || price === null || price === undefined
+        ? entryPx
+        : Number(price);
+
+    if (!Number.isFinite(effectivePrice) || effectivePrice <= 0) {
+      setErr("Enter a valid price (or make sure this trade has a valid entry price).");
       return;
     }
 
@@ -716,7 +729,7 @@ function ScaleTradeDialog({
       const updated = await apiScaleTrade(trade.id, {
         direction: mode === "IN" ? "IN" : "OUT",
         quantity: Math.round(Math.abs(q)),
-        price: price === "" ? null : Number(price),
+        price: effectivePrice,
         note,
       });
       onScaled(updated);
@@ -770,12 +783,12 @@ function ScaleTradeDialog({
         </div>
 
         <div>
-          <div className="text-xs mb-1">Price (optional)</div>
+          <div className="text-xs mb-1">Price</div>
           <Input
             type="number"
             value={price}
             onChange={(e) => setPrice(e.target.value ? Number(e.target.value) : "")}
-            placeholder="leave empty to let server decide"
+            placeholder={entryPx ? `leave empty to use ${entryPx.toFixed(2)}` : "enter a price"}
           />
         </div>
 

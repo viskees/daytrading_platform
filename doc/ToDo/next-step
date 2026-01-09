@@ -1,0 +1,159 @@
+5) Plan to implement your upgrade in small, manageable steps (no coding yet)
+
+Step 0 — Fix/decide the “price optional” scaling contract (must-do)
+
+Pick one:
+	•	0A: backend allows price to be omitted/null and selects a default
+	•	0B: frontend requires price and the UI text reflects that
+
+This prevents us from building risk previews on top of a shaky request contract.
+
+⸻
+
+Step 1 — Add risk preview to the scaling dialog (UI-only first)
+
+Goal: inside ScaleTradeDialog, show:
+	•	Current risk used (this trade, right now)
+	•	Risk after action (if scale in/out is applied)
+	•	Delta (extra risk taken or risk released)
+
+Notes:
+	•	This can be computed client-side using:
+	•	trade side, current qty, stop, avg entry
+	•	input qty, and price (or estimated price if we go with backend defaulting)
+	•	If stop is missing → show “Risk can’t be computed without stop.”
+
+Keep it small: show dollars first; we can add “% of per-trade cap” later.
+
+⸻
+
+Step 2 — Add screenshot/file upload to scaling dialog (reusing your existing plumbing)
+
+Goal: scaling modal gets the same upload UX as new trade:
+	•	reuse ImagePasteDrop component already in Dashboard.tsx
+	•	after successful apiScaleTrade(...), loop files → apiCreateAttachment(trade.id, file)
+
+This requires no backend change (attachments are per trade already).
+
+⸻
+
+Step 3 (optional, later) — Attach screenshots to a specific scale action
+
+Right now, attachments belong to the trade, not a specific TradeFill/scale event.
+If you want “this screenshot corresponds to this scale-in”, then later we’d add:
+	•	Attachment.trade_fill FK (nullable) or a generic “event id”
+	•	update serializers/endpoints
+But we do not need this for your stated next step.
+
+
+#######
+4) Files involved (as requested)
+
+Frontend (most relevant)
+	•	frontend/src/routes/app/Dashboard.tsx
+	•	NewTradeDialog
+	•	ScaleTradeDialog
+	•	ImagePasteDrop (upload UI)
+	•	risk budget calculations used by NewTradeDialog
+	•	frontend/src/lib/api.ts
+	•	createTrade
+	•	scaleTrade
+	•	createAttachment
+	•	fetchUserSettings
+
+(Secondary / legacy-ish)
+	•	frontend/src/components/TradeEditor.tsx
+	•	appears to be an older “New trade / Edit trade” component; your current screenshot matches the Dashboard modal, not this one.
+
+Backend (most relevant)
+	•	django/app/journal/views.py
+	•	TradeViewSet.perform_create
+	•	TradeViewSet.scale
+	•	AttachmentViewSet
+	•	django/app/journal/serializers.py
+	•	TradeSerializer
+	•	TradeScaleSerializer
+	•	AttachmentSerializer
+	•	django/app/journal/models.py
+	•	Trade, TradeFill (scaling)
+	•	Attachment
+	•	UserSettings
+	•	django/app/journal/urls.py
+	•	router registration for trades, attachments, settings
+
+
+#######
+1) What you have today (recognized from your screenshots)
+
+A) “New trade” dialog (the one in your screenshot)
+
+Frontend (UI)
+	•	The “New trade” modal is implemented inline inside:
+	•	frontend/src/routes/app/Dashboard.tsx
+	•	Component: NewTradeDialog(...)
+	•	It contains the fields you see: ticker, side LONG/SHORT buttons, entry/stop/target/size, tags, entry emotion, notes
+	•	It computes and shows:
+	•	Position value
+	•	Risk at stop
+	•	Footer: Trade risk / per-trade cap / daily remaining
+	•	Screenshot/file upload is handled via:
+	•	ImagePasteDrop (also defined inline in the same file)
+	•	It stores selected files in shots: File[]
+
+Frontend (API calls)
+	•	Trade create:
+	•	frontend/src/lib/api.ts → createTrade(...) (called as apiCreateTrade(...) in Dashboard)
+	•	Attachments upload:
+	•	frontend/src/lib/api.ts → createAttachment(tradeId, file, caption?)
+	•	Flow in NewTradeDialog:
+	1.	apiCreateTrade(...)
+	2.	loop over shots → apiCreateAttachment(trade.id, f)
+
+Backend (Django)
+	•	Trade create endpoint:
+	•	django/app/journal/views.py → TradeViewSet.perform_create(...)
+	•	Router:
+	•	django/app/journal/urls.py registers "trades" → TradeViewSet
+	•	Serializer:
+	•	django/app/journal/serializers.py → TradeSerializer
+	•	Risk guards enforced on create:
+	•	per-trade risk % vs UserSettings.max_risk_per_trade_pct
+	•	daily loss % vs UserSettings.max_daily_loss_pct
+	•	max trades per day vs UserSettings.max_trades_per_day
+	•	Attachments endpoint:
+	•	django/app/journal/views.py → AttachmentViewSet (multipart)
+	•	Router:
+	•	django/app/journal/urls.py registers "attachments" → AttachmentViewSet
+	•	Model:
+	•	django/app/journal/models.py → Attachment
+
+⸻
+
+B) “Scale” dialog (the one in your screenshot)
+
+Frontend (UI)
+	•	The “Scale {ticker}” modal is also implemented inline inside:
+	•	frontend/src/routes/app/Dashboard.tsx
+	•	Component: ScaleTradeDialog(...)
+	•	Fields you see: scale in/out toggle, quantity, optional price, note
+	•	It currently shows: current position and avg entry
+	•	No risk preview shown
+	•	No screenshot/file upload shown
+
+Frontend (API calls)
+	•	Scale request:
+	•	frontend/src/lib/api.ts → scaleTrade(id, payload) (called as apiScaleTrade(...))
+
+Backend (Django)
+	•	Scale endpoint:
+	•	django/app/journal/views.py → TradeViewSet.scale(self, request, pk=None)
+	•	URL is:
+	•	POST /api/journal/trades/{id}/scale/
+	•	Input serializer:
+	•	django/app/journal/serializers.py → TradeScaleSerializer
+	•	Backend scaling behavior includes:
+	•	Bootstrapping fills if legacy trade has none (_ensure_bootstrap_entry_fill)
+	•	Create a TradeFill
+	•	Validate “scale out <= remaining”
+	•	Risk check on scale in (per-trade risk % vs settings)
+	•	If position becomes flat after scaling → auto-close trade

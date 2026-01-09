@@ -736,7 +736,7 @@ export async function scaleTrade(
   payload: {
     direction: "IN" | "OUT"; // required by backend
     quantity: number;        // must be >= 1 (positive)
-    price?: number | null; // optional; server can default to last/entry
+    price?: number | null; // NOTE: backend expects a price today
     note?: string;         // optional note for the scale action
   }
 ): Promise<NormalizedTrade> {
@@ -749,9 +749,15 @@ export async function scaleTrade(
   }
 
   const body: any = { direction: payload.direction, quantity: Math.round(q) };
-  if (payload.price != null && Number.isFinite(Number(payload.price))) {
-    body.price = Number(payload.price);
+  // Backend expects price; enforce here so callers don't accidentally omit it.
+  if (payload.price === null || payload.price === undefined) {
+    throw new Error("Scale trade requires a price. (UI should provide a fallback price.)");
   }
+  const px = Number(payload.price);
+  if (!Number.isFinite(px) || px <= 0) {
+    throw new Error("Scale trade requires a valid price > 0.");
+  }
+  body.price = px;
   if (payload.note !== undefined) body.note = String(payload.note ?? "");
 
   const res = await apiFetch(`/journal/trades/${id}/scale/`, {
