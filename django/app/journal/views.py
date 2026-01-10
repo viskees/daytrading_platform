@@ -42,6 +42,7 @@ from .serializers import (
     UserSettingsSerializer,
     JournalDaySerializer,
     TradeSerializer,
+    TradeDetailSerializer,
     TradeScaleSerializer,
     StrategyTagSerializer,
     AttachmentSerializer,
@@ -212,8 +213,26 @@ class TradeViewSet(viewsets.ModelViewSet):
     ordering = ["-entry_time"]  # default when no ?ordering=… is provided
     search_fields = ["ticker", "notes"]
 
+    def get_serializer_class(self):
+        """
+        Use a richer serializer for endpoints where the UI needs the fill timeline.
+        - retrieve: closed trade details screen
+        - scale/close: return updated trade including fills immediately
+        """
+        if getattr(self, "action", None) in ("retrieve", "scale", "close"):
+            return TradeDetailSerializer
+        return TradeSerializer
+
+
     def get_queryset(self):
-        qs = Trade.objects.filter(user=self.request.user).prefetch_related("strategy_tags")
+        qs = (
+            Trade.objects.filter(user=self.request.user)
+            .prefetch_related(
+                "strategy_tags",
+                "fills",
+                "attachments",
+            )
+        )
         params = self.request.query_params
 
         # existing filters

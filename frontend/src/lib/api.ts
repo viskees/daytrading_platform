@@ -69,6 +69,28 @@ type ApiTrade = {
   entry_emotion_note?: string | null;
   exit_emotion?: "NEUTRAL" | "BIASED" | null;
   exit_emotion_note?: string | null;
+  // detail serializer includes fills (scales / partials)
+  fills?: ApiTradeFill[];
+};
+
+type ApiTradeFill = {
+  id: number;
+  timestamp?: string; // ISO
+  action?: string;    // e.g. "BUY" / "SELL"
+  quantity?: number | string;
+  price?: number | string;
+  commission?: number | string;
+  note?: string | null;
+};
+
+export type TradeFill = {
+  id: number;
+  timestamp?: string;
+  action?: string;
+  quantity?: number;
+  price?: number;
+  commission?: number;
+  note?: string;
 };
 
 export type NormalizedTrade = {
@@ -123,6 +145,8 @@ export type NormalizedTrade = {
 
   // reserved for future risk calc
   riskR?: number;
+  // trade fills / scale actions (from detail serializer)
+  fills?: TradeFill[];
 };
 
 /* ----------------------- Small utilities ------------------------------ */
@@ -447,6 +471,19 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     }
   }
 
+  // Normalize fills from detail serializer (if present)
+  const fills: TradeFill[] | undefined = Array.isArray((x as any).fills)
+    ? ((x as any).fills as ApiTradeFill[]).map((f) => ({
+        id: Number((f as any).id),
+        timestamp: (f as any).timestamp ?? undefined,
+        action: (f as any).action ?? undefined,
+        quantity: toNumber((f as any).quantity),
+        price: toNumber((f as any).price),
+        commission: toNumber((f as any).commission),
+        note: String((f as any).note ?? "").trim() || undefined,
+      }))
+    : undefined;
+
   return {
     id: x.id,
     journal_day: x.journal_day,
@@ -469,14 +506,8 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     exitTime: x.exit_time ?? undefined,
     realizedPnl: realizedPnlVal,
     rMultiple: rMultipleVal,
-    positionQty:
-      typeof (x as any).position_qty === "number"
-        ? (x as any).position_qty
-        : undefined,
-    avgEntryPrice:
-      typeof (x as any).avg_entry_price === "number"
-        ? (x as any).avg_entry_price
-        : undefined,
+    positionQty: positionQtyNum,
+    avgEntryPrice: toNumber((x as any).avg_entry_price),
 
     // scaling summary
     vwapEntry: vwapEntryNum ?? null,
@@ -513,6 +544,7 @@ function normalizeTrade(x: ApiTrade): NormalizedTrade {
     exitEmotion: x.exit_emotion ?? null,
     exitEmotionNote: x.exit_emotion_note ?? "",
     riskR: undefined,
+    fills,
   };
 }
 
@@ -802,7 +834,12 @@ export async function listAttachments(
             id: r.id,
             image: img,
             caption: r.caption ?? r.note ?? "",
-            created_at: r.created_at ?? r.createdAt ?? undefined,
+            // backend uses uploaded_at; keep created_at for UI compatibility
+            created_at:
+              r.uploaded_at ??
+              r.created_at ??
+              r.createdAt ??
+              undefined,
           }
         : null;
     })
