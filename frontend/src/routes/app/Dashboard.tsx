@@ -682,25 +682,127 @@ function ScaleTradeDialog({
   trade,
   onScaled,
   onClose,
+  perTradeCap$,
 }: {
   trade: Trade;
   onScaled: (updated: Trade) => void;
   onClose: () => void;
+  perTradeCap$: number;
 }) {
   const [mode, setMode] = useState<"IN" | "OUT">("IN");
   const [qty, setQty] = useState<number | "">("");
   const [price, setPrice] = useState<number | "">("");
   const [note, setNote] = useState("");
+  const [shots, setShots] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Current live position + cost basis (preferred after scaling)
   const currentQty = Number(trade.positionQty ?? trade.size ?? 0);
   const entryPx = Number(trade.avgEntryPrice ?? trade.entryPrice ?? 0);
+  const stopPx = trade.stopLoss == null ? NaN : Number(trade.stopLoss);
+
+  const fmtMoney = (n: number) =>
+    Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  // Determine the effective price we will use for a scale action (same rule as submit()).
+  const effectivePrice = useMemo(() => {
+    const px =
+      price === "" || price === null || price === undefined
+        ? entryPx
+        : Number(price);
+    return Number.isFinite(px) ? px : NaN;
+  }, [price, entryPx]);
+
+  // Helper: per-share risk based on (avgEntry, stop) and side.
+  const perShareRisk = useCallback(
+    (avgEntry: number) => {
+      if (!Number.isFinite(avgEntry) || !Number.isFinite(stopPx)) return NaN;
+      if (trade.side === "LONG") return Math.max(0, avgEntry - stopPx);
+      return Math.max(0, stopPx - avgEntry);
+    },
+    [trade.side, stopPx]
+  );
+
+  const currentRisk$ = useMemo(() => {
+    if (!Number.isFinite(currentQty) || currentQty <= 0) return 0;
+    const rps = perShareRisk(entryPx);
+    if (!Number.isFinite(rps)) return NaN;
+    return rps * currentQty;
+  }, [currentQty, entryPx, perShareRisk]);
+
+  // Preview next qty + next avg entry after applying this scale action.
+  const preview = useMemo(() => {
+    const q = Number(qty);
+    if (!Number.isFinite(q) || q <= 0) {
+      return {
+        valid: false as const,
+        nextQty: currentQty,
+        nextAvgEntry: entryPx,
+        nextRisk$: NaN,
+        deltaRisk$: NaN,
+      };
+    }
+
+    // qty is always positive from the UI; direction controls in/out.
+    const deltaQty = Math.round(Math.abs(q));
+
+    let nextQty = currentQty;
+    let nextAvgEntry = entryPx;
+
+    if (mode === "IN") {
+      nextQty = currentQty + deltaQty;
+      // Weighted avg entry after adding at effectivePrice
+      // (If currentQty is 0, avg entry becomes effectivePrice.)
+      if (nextQty > 0) {
+        const baseNotional = (currentQty > 0 ? entryPx * currentQty : 0);
+        const addNotional = effectivePrice * deltaQty;
+        nextAvgEntry = (baseNotional + addNotional) / nextQty;
+      }
+    } else {
+      // OUT
+      nextQty = Math.max(0, currentQty - deltaQty);
+      // Avg entry does not change when scaling out
+      nextAvgEntry = entryPx;
+    }
+
+    const rpsNext = perShareRisk(nextAvgEntry);
+    const nextRisk$ = Number.isFinite(rpsNext) ? rpsNext * nextQty : NaN;
+
+    const deltaRisk$ =
+      Number.isFinite(currentRisk$) && Number.isFinite(nextRisk$) ? nextRisk$ - currentRisk$ : NaN;
+
+    return {
+      valid: true as const,
+      nextQty,
+      nextAvgEntry,
+      nextRisk$,
+      deltaRisk$,
+    };
+  }, [qty, mode, currentQty, entryPx, effectivePrice, perShareRisk, currentRisk$]);
+
+  const currentRiskR = useMemo(() => {
+    if (!Number.isFinite(currentRisk$) || perTradeCap$ <= 0) return NaN;
+    return currentRisk$ / perTradeCap$;
+  }, [currentRisk$, perTradeCap$]);
+
+  const nextRiskR = useMemo(() => {
+    if (!Number.isFinite(preview.nextRisk$) || perTradeCap$ <= 0) return NaN;
+    return preview.nextRisk$ / perTradeCap$;
+  }, [preview.nextRisk$, perTradeCap$]);
 
   const submit = async () => {
     const q = Number(qty);
     if (!Number.isFinite(q) || q <= 0) {
       setErr("Enter a positive quantity.");
+      return;
+    }
+
+    // Backend currently expects a price. If user leaves it empty, use a deterministic fallback.
+    // We pick the current cost basis (avg entry for scaled trades, else entryPrice).
+
+    if (!Number.isFinite(effectivePrice) || effectivePrice <= 0) {
+      setErr("Enter a valid price (or make sure this trade has a valid entry price).");
       return;
     }
 
@@ -716,9 +818,11 @@ function ScaleTradeDialog({
       const updated = await apiScaleTrade(trade.id, {
         direction: mode === "IN" ? "IN" : "OUT",
         quantity: Math.round(Math.abs(q)),
-        price: price === "" ? null : Number(price),
+        price: effectivePrice,
         note,
       });
+      // Upload any screenshots after successful scale action
+      for (const f of shots) await apiCreateAttachment(trade.id, f);
       onScaled(updated);
       onClose();
     } catch (e: any) {
@@ -746,6 +850,41 @@ function ScaleTradeDialog({
           Current position: <span className="font-medium text-foreground">{currentQty || "-"}</span>{" "}
           · Avg entry: <span className="font-medium text-foreground">{entryPx ? entryPx.toFixed(2) : "-"}</span>
         </div>
+        
+        <div className="md:col-span-3 -mt-1 text-xs text-muted-foreground">
+          {Number.isFinite(stopPx) && stopPx > 0 ? (
+            <div className="flex flex-wrap gap-x-6 gap-y-1">
+              <div>
+                Current risk at stop:{" "}
+                <span className="font-medium text-foreground tabular-nums">
+                  ${Number.isFinite(currentRisk$) ? fmtMoney(currentRisk$) : "-"}
+                </span>
+                {Number.isFinite(currentRiskR) ? (
+                  <span className="ml-2 tabular-nums">(R: {currentRiskR.toFixed(2)})</span>
+                ) : null}
+              </div>
+
+              <div>
+                After scale:{" "}
+                <span className="font-medium text-foreground tabular-nums">
+                  ${Number.isFinite(preview.nextRisk$) ? fmtMoney(preview.nextRisk$) : "-"}
+                </span>
+                {Number.isFinite(nextRiskR) ? (
+                  <span className="ml-2 tabular-nums">(R: {nextRiskR.toFixed(2)})</span>
+                ) : null}
+                {Number.isFinite(preview.deltaRisk$) ? (
+                  <span className="ml-2 tabular-nums">
+                    (Δ {preview.deltaRisk$ >= 0 ? "+" : "−"}${fmtMoney(Math.abs(preview.deltaRisk$))})
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <div className="text-amber-600">
+              Risk preview unavailable: this trade has no stop price.
+            </div>
+          )}
+        </div>
 
         <div>
           <div className="text-xs mb-1">Action</div>
@@ -770,18 +909,21 @@ function ScaleTradeDialog({
         </div>
 
         <div>
-          <div className="text-xs mb-1">Price (optional)</div>
+          <div className="text-xs mb-1">Price</div>
           <Input
             type="number"
             value={price}
             onChange={(e) => setPrice(e.target.value ? Number(e.target.value) : "")}
-            placeholder="leave empty to let server decide"
+            placeholder={entryPx ? `leave empty to use ${entryPx.toFixed(2)}` : "enter a price"}
           />
         </div>
 
         <div className="md:col-span-3">
           <div className="text-xs mb-1">Note (optional)</div>
           <Textarea value={note} onChange={(e) => setNote(e.target.value)} className="h-20" />
+        </div>
+        <div className="md:col-span-3">
+          <ImagePasteDrop files={shots} setFiles={setShots} label="Click or paste scale screenshot (Ctrl/Cmd+V)" />
         </div>
       </div>
 
@@ -1375,6 +1517,7 @@ export default function Dashboard() {
         <ScaleTradeDialog
           trade={scaling}
           onClose={() => setScaling(null)}
+          perTradeCap$={perTradeCap$}
           onScaled={(updated) => {
             setOpenTrades((prev) => {
               const u = updated;
