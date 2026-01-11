@@ -73,6 +73,9 @@ class AttachmentSerializer(serializers.ModelSerializer):
         return data
 
 class TradeFillSerializer(serializers.ModelSerializer):
+
+    direction = serializers.SerializerMethodField()
+
     class Meta:
         model = TradeFill
         fields = [
@@ -80,12 +83,32 @@ class TradeFillSerializer(serializers.ModelSerializer):
             "trade",
             "timestamp",
             "action",
+            "direction",
             "quantity",
             "price",
             "commission",
             "note",
         ]
-        read_only_fields = ["id", "trade", "timestamp", "action", "quantity", "price", "commission", "note"]
+        read_only_fields = ["id", "trade", "timestamp", "action", "direction", "quantity", "price", "commission", "note"]
+    
+    def get_direction(self, obj):
+        try:
+            side = getattr(getattr(obj, "trade", None), "side", None)
+            action = (getattr(obj, "action", "") or "").upper()
+            if side == "LONG":
+                if action == "BUY":
+                    return "IN"
+                if action == "SELL":
+                    return "OUT"
+            if side == "SHORT":
+                if action == "SELL":
+                    return "IN"
+                if action == "BUY":
+                    return "OUT"
+        except Exception:
+            pass
+        return None
+
 
 
 class TradeScaleSerializer(serializers.Serializer):
@@ -354,6 +377,16 @@ class TradeSerializer(serializers.ModelSerializer):
             instance.strategy_tags.set(tags)
         return instance
 
+class TradeDetailSerializer(TradeSerializer):
+    """
+    Trade detail serializer:
+    - Adds fills so the frontend can render a scale timeline for closed trades.
+    """
+    fills = TradeFillSerializer(many=True, read_only=True)
+
+    class Meta(TradeSerializer.Meta):
+        fields = list(TradeSerializer.Meta.fields) + ["fills"]
+        read_only_fields = list(TradeSerializer.Meta.read_only_fields) + ["fills"]
 
 class JournalDaySerializer(serializers.ModelSerializer):
     trades = TradeSerializer(many=True, read_only=True)

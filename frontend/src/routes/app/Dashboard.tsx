@@ -530,7 +530,7 @@ function CloseTradeDialog({
   onClose,
   commissionPolicy,
 }: {
-  rade: Trade;
+  trade: Trade;
   onClosed: (id: string) => void;
   onClose: () => void;
   commissionPolicy: CommissionPolicy | null;
@@ -587,10 +587,12 @@ function CloseTradeDialog({
 
 
   const submit = async () => {
+    if (!exitPrice) return; // extra safety; button already guards this
+
     setSaving(true);
     try {
       await apiCloseTrade(trade.id, {
-        exitPrice: exitPrice ? Number(exitPrice) : undefined,
+        exitPrice: Number(exitPrice),
         notes,
         exitEmotion,
         exitEmotionNote,
@@ -821,8 +823,19 @@ function ScaleTradeDialog({
         price: effectivePrice,
         note,
       });
-      // Upload any screenshots after successful scale action
-      for (const f of shots) await apiCreateAttachment(trade.id, f);
+
+      // Upload screenshots after successful scale action.
+      // Tag attachment caption with the created fill id for clean mapping in journal detail.
+      const fills = Array.isArray((updated as any)?.fills) ? ((updated as any).fills as any[]) : [];
+      const newestFill = fills.length ? fills[fills.length - 1] : null;
+      const fillTag = newestFill?.id ? `FILL:${newestFill.id}` : "";
+      const actionTag = mode === "IN" ? "SCALE_IN" : "SCALE_OUT";
+      const captionBase = [fillTag, actionTag].filter(Boolean).join(" ").trim();
+
+      for (const f of shots) {
+        await apiCreateAttachment(trade.id, f, captionBase);
+      }
+
       onScaled(updated);
       onClose();
     } catch (e: any) {

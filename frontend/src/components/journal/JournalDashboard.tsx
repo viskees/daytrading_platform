@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import TradesCalendar from "@/components/Calendar";
 import {
   fetchClosedTrades,
+  fetchTradeDetail,
   listAttachments,
   type NormalizedTrade as Trade,
 } from "@/lib/api";
@@ -270,14 +271,23 @@ function TradeDetailSheet({
 }: { trade: Trade | null; open: boolean; onOpenChange: (v: boolean) => void }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [lightbox, setLightbox] = useState<{ idx: number } | null>(null);
+  const [detail, setDetail] = useState<Trade | null>(null);
 
   useEffect(() => {
     if (!open || !trade) return;
     (async () => {
+      try {
+        const t = await fetchTradeDetail(trade.id);
+        setDetail(t);
+      } catch {
+        setDetail(trade);
+      }
       const att = await listAttachments(trade.id);
       setAttachments(Array.isArray(att) ? att : []);
     })();
   }, [open, trade]);
+
+  const t = detail ?? trade;
 
   const sorted = useMemo(() => {
     const rank = (a: Attachment) => {
@@ -291,38 +301,118 @@ function TradeDetailSheet({
 
   const imgs = useMemo(() => sorted.map((a) => ({ src: a.image, alt: a.caption })), [sorted]);
 
-  const commEntry = trade?.commissionEntryTotal ?? trade?.commissionEntry;
-  const commExit = trade?.commissionExitTotal ?? trade?.commissionExit;
+  const commEntry = t?.commissionEntryTotal ?? t?.commissionEntry;
+  const commExit = t?.commissionExitTotal ?? t?.commissionExit;
   const commTotal =
-    trade?.commissionTotal ??
+    t?.commissionTotal ??
     (Number.isFinite(Number(commEntry)) || Number.isFinite(Number(commExit))
       ? Number(commEntry ?? 0) + Number(commExit ?? 0)
       : undefined);
 
   const gross =
-    trade?.realizedGross != null
-      ? trade.realizedGross
-      : (trade?.realizedPnl != null && commTotal != null ? trade.realizedPnl + commTotal : null);
+    t?.realizedGross != null
+      ? t.realizedGross
+      : (t?.realizedPnl != null && commTotal != null ? t.realizedPnl + commTotal : null);
 
   const showCommissionBlock =
     (commTotal != null && Number(commTotal) !== 0) ||
     (commEntry != null && Number(commEntry) !== 0) ||
     (commExit != null && Number(commExit) !== 0) ||
-    trade?.realizedGross != null;
+    t?.realizedGross != null;
 
+  // Build a timeline: fills + attachments grouped by time window
+  const timeOf = (iso?: string | null) => {
+    if (!iso) return NaN;
+    const ms = Date.parse(iso);
+    return Number.isFinite(ms) ? ms : NaN;
+  };
+
+  const attachmentsByTime = useMemo(() => {
+    const rows = [...attachments].sort((a, b) => {
+      const ta = timeOf(a.created_at ?? null);
+      const tb = timeOf(b.created_at ?? null);
+      if (!Number.isFinite(ta) && !Number.isFinite(tb)) return 0;
+      if (!Number.isFinite(ta)) return 1;
+      if (!Number.isFinite(tb)) return -1;
+      return ta - tb;
+    });
+    return rows;
+  }, [attachments]);
+
+  const timeline = useMemo(() => {
+    const fills = Array.isArray((t as any)?.fills) ? ((t as any).fills as any[]) : [];
+    const sortedFills = [...fills].sort((a, b) => {
+      const ta = timeOf(a.timestamp ?? null);
+      const tb = timeOf(b.timestamp ?? null);
+      if (!Number.isFinite(ta) && !Number.isFinite(tb)) return 0;
+      if (!Number.isFinite(ta)) return 1;
+      if (!Number.isFinite(tb)) return -1;
+      return ta - tb;
+    });
+
+    // If no fills, fall back to single block with trade notes + all screenshots
+    if (sortedFills.length === 0) {
+      return [
+        {
+          key: "TRADE",
+          title: "Trade",
+          timestamp: t?.entryTime ?? null,
+          note: t?.notes ?? "",
+          fills: [],
+          attachments: attachmentsByTime,
+        },
+      ];
+    }
+
+    // Group attachments into "between this fill and the next fill"
+    const blocks = sortedFills.map((f, idx) => {
+      const start = timeOf(f.timestamp ?? null);
+      const next = sortedFills[idx + 1];
+      const end = next ? timeOf(next.timestamp ?? null) : timeOf(t?.exitTime ?? null);
+
+      const att = attachmentsByTime.filter((a) => {
+        const ta = timeOf(a.created_at ?? null);
+        if (!Number.isFinite(ta) || !Number.isFinite(start)) return false;
+        // if end is invalid, treat as "after start"
+        if (!Number.isFinite(end)) return ta >= start;
+        return ta >= start && ta < end;
+      });
+
+      return {
+        key: `FILL:${f.id}`,
+        title: (f.action ? String(f.action) : "Fill") + (idx === 0 ? " (entry)" : ""),
+        timestamp: f.timestamp ?? null,
+        note: String(f.note ?? "").trim(),
+        fill: f,
+        attachments: att,
+      };
+    });
+
+    // Add any attachments that have no timestamp (or couldn't be assigned) to last block
+    const assignedIds = new Set(blocks.flatMap((b) => b.attachments.map((a) => a.id)));
+    const unassigned = attachmentsByTime.filter((a) => !assignedIds.has(a.id));
+    if (unassigned.length) {
+      blocks[blocks.length - 1] = {
+        ...blocks[blocks.length - 1],
+        attachments: [...blocks[blocks.length - 1].attachments, ...unassigned],
+      };
+    }
+
+    return blocks;
+  }, [t, attachmentsByTime]);
 
   return (
     <>
-      <SlideOver open={open} onOpenChange={onOpenChange} title={`${trade?.ticker} · ${trade?.side}`}>
+      <SlideOver open={open} onOpenChange={onOpenChange} title={`${t?.ticker} · ${t?.side}`}>
         <div className="grid gap-4">
           {/* Core stats */}
           <div className="grid grid-cols-2 gap-2">
-            <Stat label="Avg entry" value={fmtPx(trade?.entryPrice)} />
-            <Stat label="Avg exit" value={trade?.exitPrice == null ? "—" : fmtPx(trade?.exitPrice)} />
-            <Stat label="Size" value={trade?.size ?? "—"} />
-            <Stat label="P/L" value={<span className={pnlClass(trade?.realizedPnl)}>{(trade?.realizedPnl ?? 0).toFixed(2)}</span>} />
-            <Stat label="R Multiple" value={trade?.rMultiple == null ? "—" : Number(trade?.rMultiple).toFixed(2)} />
-            <Stat label="Time" value={formatTradeTimeRange(trade?.entryTime, trade?.exitTime)} />
+            <Stat label="Avg entry" value={fmtPx(t?.entryPrice)} />
+            <Stat label="Avg exit" value={t?.exitPrice == null ? "—" : fmtPx(t?.exitPrice)} />
+            <Stat label="Size" value={t?.size ?? "—"} />
+            <Stat label="P/L" value={<span className={pnlClass(t?.realizedPnl)}>{(t?.realizedPnl ?? 0).toFixed(2)}</span>} />
+            <Stat label="R Multiple" value={t?.rMultiple == null ? "—" : Number(t?.rMultiple).toFixed(2)} />
+            <Stat label="Time" value={formatTradeTimeRange(t?.entryTime, t?.exitTime)} />
           </div>
 
           {/* Closed-trade commission breakdown (clean summary) */}
@@ -340,12 +430,12 @@ function TradeDetailSheet({
             <Stat
               label="Entry emotion"
               value={
-                trade?.entryEmotion ? (
+                t?.entryEmotion ? (
                   <span>
-                    <Badge variant={trade.entryEmotion === "BIASED" ? "destructive" : "secondary"} className="mr-2">
-                      {trade.entryEmotion}
+                    <Badge variant={t.entryEmotion === "BIASED" ? "destructive" : "secondary"} className="mr-2">
+                      {t.entryEmotion}
                     </Badge>
-                    <span className="text-xs text-muted-foreground">{trade.entryEmotionNote || ""}</span>
+                    <span className="text-xs text-muted-foreground">{t.entryEmotionNote || ""}</span>
                   </span>
                 ) : (
                   <span className="text-muted-foreground">—</span>
@@ -355,12 +445,12 @@ function TradeDetailSheet({
             <Stat
               label="Exit emotion"
               value={
-                trade?.exitEmotion ? (
+                t?.exitEmotion ? (
                   <span>
-                    <Badge variant={trade.exitEmotion === "BIASED" ? "destructive" : "secondary"} className="mr-2">
-                      {trade.exitEmotion}
+                    <Badge variant={t.exitEmotion === "BIASED" ? "destructive" : "secondary"} className="mr-2">
+                      {t.exitEmotion}
                     </Badge>
-                    <span className="text-xs text-muted-foreground">{trade.exitEmotionNote || ""}</span>
+                    <span className="text-xs text-muted-foreground">{t.exitEmotionNote || ""}</span>
                   </span>
                 ) : (
                   <span className="text-muted-foreground">—</span>
@@ -370,46 +460,73 @@ function TradeDetailSheet({
           </div>
 
           {/* Tags */}
-          {trade?.strategyTags?.length ? (
+          {t?.strategyTags?.length ? (
             <div>
               <div className="text-xs mb-1 text-muted-foreground">Strategy tags</div>
               <div className="flex flex-wrap gap-1">
-                {trade.strategyTags.map((tag, i) => (
+                {t.strategyTags.map((tag, i) => (
                   <Badge key={i} variant="secondary" className="text-[10px]">{tag}</Badge>
                 ))}
               </div>
             </div>
           ) : null}
 
-          {/* Screenshots */}
+          {/* Timeline (fills + notes + screenshots aligned) */}
           <div>
-            <div className="text-xs mb-1 text-muted-foreground">Screenshots</div>
-            {sorted.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No screenshots attached.</div>
+            <div className="text-xs mb-2 text-muted-foreground">Actions · Notes · Screenshots</div>
+            {timeline.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No actions found.</div>
             ) : (
-              <div className="grid grid-cols-2 gap-2">
-                {sorted.map((a, i) => (
-                  <button
-                    key={a.id}
-                    className="group relative aspect-video overflow-hidden rounded border hover:ring-2 hover:ring-primary/30"
-                    onClick={() => setLightbox({ idx: i })}
-                    title={a.caption || ""}
-                  >
-                    <img src={a.image} alt={a.caption || ""} className="w-full h-full object-cover" />
-                    <span className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded-full bg-black/60 text-white">
-                      {labelFromCaption(a.caption)}
-                    </span>
-                  </button>
+              <div className="grid gap-3">
+                {timeline.map((b: any) => (
+                  <div key={b.key} className="rounded-xl border p-3 bg-white/90 dark:bg-zinc-900/90">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold">{b.title}</div>
+                      <div className="text-xs text-muted-foreground">{b.timestamp ? `${dmy(new Date(b.timestamp))} ${hhmm(b.timestamp)}` : "—"}</div>
+                    </div>
+
+                    {b.note ? (
+                      <div className="mt-2 text-sm whitespace-pre-wrap">{b.note}</div>
+                    ) : (
+                      <div className="mt-2 text-sm text-muted-foreground">No note.</div>
+                    )}
+
+                    <div className="mt-3">
+                      {b.attachments?.length ? (
+                        <div className="grid grid-cols-2 gap-2">
+                          {b.attachments.map((a: Attachment) => {
+                            // find global index for lightbox
+                            const globalIdx = sorted.findIndex((x) => x.id === a.id);
+                            return (
+                              <button
+                                key={a.id}
+                                className="group relative aspect-video overflow-hidden rounded border hover:ring-2 hover:ring-primary/30"
+                                onClick={() => setLightbox({ idx: Math.max(0, globalIdx) })}
+                                title={a.caption || ""}
+                              >
+                                <img src={a.image} alt={a.caption || ""} className="w-full h-full object-cover" />
+                                <span className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded-full bg-black/60 text-white">
+                                  {labelFromCaption(a.caption)}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted-foreground">No screenshots in this action window.</div>
+                      )}
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
           </div>
 
           {/* Notes */}
-          {trade?.notes ? (
+          {t?.notes ? (
             <div>
               <div className="text-xs mb-1 text-muted-foreground">Notes</div>
-              <div className="text-sm whitespace-pre-wrap">{trade.notes}</div>
+              <div className="text-sm whitespace-pre-wrap">{t.notes}</div>
             </div>
           ) : null}
         </div>
