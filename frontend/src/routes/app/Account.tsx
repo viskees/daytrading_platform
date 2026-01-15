@@ -15,14 +15,8 @@ import {
   disableTwoFA,
 } from "@/lib/api";
 
-/**
- * Notes:
- * - Display name save uses PATCH /accounts/me/ by default.
- *   If your backend uses a different endpoint, change PROFILE_ENDPOINT below.
- * - Password: we link to /forgot-password (as you suggested) instead of duplicating the flow.
- */
 
-const PROFILE_ENDPOINT = "/accounts/me/"; // <-- change if needed
+const PROFILE_ENDPOINT = "/auth/me/";
 
 function ModalShell({
   title,
@@ -94,6 +88,7 @@ export default function Account() {
         // Try common field names (depends on your backend)
         const dn =
           meData?.display_name ??
+          meData?.first_name ??
           meData?.displayName ??
           meData?.nickname ??
           meData?.nick_name ??
@@ -127,7 +122,7 @@ export default function Account() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           // pick one field; backend should ignore unknowns if serializer is strict it may 400
-          display_name: displayName,
+          first_name: displayName,
         }),
       });
 
