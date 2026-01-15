@@ -1,110 +1,158 @@
 SHELL := /usr/bin/env bash
 
-DEV_COMPOSE := docker-compose.dev.yml
+DEV_COMPOSE  := docker-compose.dev.yml
 PROD_COMPOSE := docker-compose.prod.yml
 
+DEV_ENV  := .env.dev
+PROD_ENV := .env.prod
+
+# Compose command wrappers (so we always use the correct env + compose file)
+DC_DEV  := docker compose --env-file $(DEV_ENV)  -f $(DEV_COMPOSE)
+DC_PROD := docker compose --env-file $(PROD_ENV) -f $(PROD_COMPOSE)
+
 .PHONY: help \
-        dev-up dev-down dev-logs dev-logs-django dev-logs-traefik \
-        django-shell superuser makemigrations migrate \
-        prod-up prod-down prod-logs prod-migrate prod-shell prod-superuser \
-        ma frontend-build frontend-clean
+        dev-up dev-down dev-stop dev-restart dev-wipe dev-ps \
+        dev-logs dev-logs-django dev-logs-traefik \
+        django-shell superuser makemigrations migrate ma \
+        frontend-build frontend-clean \
+        prod-up prod-down prod-stop prod-restart prod-wipe prod-ps \
+        prod-frontend-build prod-logs prod-logs-django prod-logs-traefik \
+        prod-migrate prod-shell prod-superuser
 
 help:
+	@echo ""
 	@echo "Dev:"
-	@echo "  make dev-up           # build frontend + start dev stack"
-	@echo "  make dev-down         # stop dev stack (and remove volumes)"
-	@echo "  make dev-logs         # follow logs (dev)"
-	@echo "  make dev-logs-django  # follow Django logs (dev)"
-	@echo "  make dev-logs-traefik # follow Traefik logs (dev)"
-	@echo "  make django-shell     # open Django shell in dev"
-	@echo "  make superuser        # create Django superuser (dev)"
-	@echo "  make makemigrations   # run makemigrations (dev)"
-	@echo "  make migrate          # run migrate (dev)"
-	@echo "  make ma               # rebuild Django service image (dev only)"
-	@echo "  make frontend-build   # build SPA (dev)"
-	@echo "  make frontend-clean   # remove built frontend assets"
+	@echo "  make dev-up             # build frontend + (re)build django + start dev stack"
+	@echo "  make dev-down           # stop dev stack (keeps volumes/data)"
+	@echo "  make dev-stop           # stop containers only (fast, keeps everything)"
+	@echo "  make dev-restart        # restart dev stack"
+	@echo "  make dev-wipe           # DANGER: stop dev stack AND remove volumes (wipe dev DB)"
+	@echo "  make dev-ps             # show dev services"
+	@echo "  make dev-logs           # follow logs (dev)"
+	@echo "  make dev-logs-django    # follow Django logs (dev)"
+	@echo "  make dev-logs-traefik   # follow Traefik logs (dev)"
+	@echo "  make django-shell       # open Django shell in dev"
+	@echo "  make superuser          # create Django superuser (dev)"
+	@echo "  make makemigrations     # run makemigrations (dev)"
+	@echo "  make migrate            # run migrate (dev)"
+	@echo "  make ma                 # rebuild Django service image (dev only)"
+	@echo "  make frontend-build     # build SPA (dev)"
+	@echo "  make frontend-clean     # remove built frontend assets"
 	@echo ""
 	@echo "Prod:"
-	@echo "  make prod-up          # start prod stack (build & up)"
-	@echo "  make prod-down        # stop prod stack (and remove volumes)"
-	@echo "  make prod-frontend-build # build SPA (prod)"
-	@echo "  make prod-logs        # follow logs (prod)"
-	@echo "  make prod-logs-django # follow Django logs (prod)"
-	@echo "  make prod-logs-traefik# follow Traefik logs (prod)"
-	@echo "  make prod-migrate     # run migrate (prod)"
-	@echo "  make prod-shell       # open Django shell in prod"
-	@echo "  make prod-superuser   # create Django superuser (prod)"
+	@echo "  make prod-up            # start prod stack (build & up)"
+	@echo "  make prod-down          # stop prod stack (keeps volumes/data)  ✅ safe"
+	@echo "  make prod-stop          # stop containers only (fast, keeps everything)"
+	@echo "  make prod-restart       # restart prod stack"
+	@echo "  make prod-wipe          # DANGER: stop prod stack AND remove volumes (wipe prod DB)"
+	@echo "  make prod-ps            # show prod services"
+	@echo "  make prod-frontend-build# build SPA (prod frontend compose)"
+	@echo "  make prod-logs          # follow logs (prod)"
+	@echo "  make prod-logs-django   # follow Django logs (prod)"
+	@echo "  make prod-logs-traefik  # follow Traefik logs (prod)"
+	@echo "  make prod-migrate       # run migrate (prod)"
+	@echo "  make prod-shell         # open Django shell in prod"
+	@echo "  make prod-superuser     # create Django superuser (prod)"
 
 # --------------------
 # Dev
 # --------------------
 
-dev-up:
-	make frontend-build
-	make ma
-	docker compose --env-file .env.dev -f $(DEV_COMPOSE) up -d
+dev-up: frontend-build ma
+	$(DC_DEV) up -d
 
+# SAFE: stops containers + networks, keeps volumes (DB persists)
 dev-down:
-	docker compose -f $(DEV_COMPOSE) down -v
+	$(DC_DEV) down
+
+# FAST: stops containers only (keeps networks + containers)
+dev-stop:
+	$(DC_DEV) stop
+
+dev-restart:
+	$(DC_DEV) restart
+
+# DANGER: removes named volumes (DB wipe)
+dev-wipe:
+	$(DC_DEV) down -v
+
+dev-ps:
+	$(DC_DEV) ps
 
 dev-logs:
-	docker compose -f $(DEV_COMPOSE) logs -f --tail=200
+	$(DC_DEV) logs -f --tail=200
 
 dev-logs-django:
-	docker compose -f $(DEV_COMPOSE) logs -f django
+	$(DC_DEV) logs -f django
 
 dev-logs-traefik:
-	docker compose -f $(DEV_COMPOSE) logs -f traefik
+	$(DC_DEV) logs -f traefik
 
 django-shell:
-	docker compose -f $(DEV_COMPOSE) exec django python /app/app/manage.py shell
+	$(DC_DEV) exec django python /app/app/manage.py shell
 
 superuser:
-	docker compose -f $(DEV_COMPOSE) exec django python /app/app/manage.py createsuperuser
+	$(DC_DEV) exec django python /app/app/manage.py createsuperuser
 
 makemigrations:
-	docker compose -f $(DEV_COMPOSE) exec django python /app/app/manage.py makemigrations
+	$(DC_DEV) exec django python /app/app/manage.py makemigrations
 
 migrate:
-	docker compose -f $(DEV_COMPOSE) exec django python /app/app/manage.py migrate
+	$(DC_DEV) exec django python /app/app/manage.py migrate
 
 # Rebuild Django image only (quick dev iteration)
 ma:
-	docker compose --env-file .env.dev -f $(DEV_COMPOSE) up -d --no-deps --build django
+	$(DC_DEV) up -d --no-deps --build django
 
 frontend-build:
-	docker compose --env-file .env.dev -f $(DEV_COMPOSE) run --rm frontend-build
+	$(DC_DEV) run --rm frontend-build
 
 frontend-clean:
 	rm -rf django/app/staticfiles/frontend
+
 
 # --------------------
 # Prod
 # --------------------
 
 prod-up:
-	docker compose --env-file .env.prod -f $(PROD_COMPOSE) up -d --build
+	$(DC_PROD) up -d --build
 
+# SAFE: stops containers + networks, keeps volumes (DB persists)
 prod-down:
-	docker compose --env-file .env.prod -f $(PROD_COMPOSE) down -v
+	$(DC_PROD) down
+
+# FAST: stops containers only
+prod-stop:
+	$(DC_PROD) stop
+
+prod-restart:
+	$(DC_PROD) restart
+
+# DANGER: removes volumes (DB wipe)
+prod-wipe:
+	$(DC_PROD) down -v
+
+prod-ps:
+	$(DC_PROD) ps
 
 prod-frontend-build:
 	docker compose -f docker-compose.frontend.yml run --rm frontend-build
 
 prod-logs:
-	docker compose --env-file .env.prod -f $(PROD_COMPOSE) logs -f --tail=200
+	$(DC_PROD) logs -f --tail=200
 
 prod-logs-django:
-	docker compose --env-file .env.prod -f $(PROD_COMPOSE) logs -f django
+	$(DC_PROD) logs -f django
 
 prod-logs-traefik:
-	docker compose --env-file .env.prod -f $(PROD_COMPOSE) logs -f traefik
+	$(DC_PROD) logs -f traefik
 
 prod-migrate:
-	docker compose --env-file .env.prod -f $(PROD_COMPOSE) exec django python /app/app/manage.py migrate
+	$(DC_PROD) exec django python /app/app/manage.py migrate
 
 prod-shell:
-	docker compose --env-file .env.prod -f $(PROD_COMPOSE) exec django python /app/app/manage.py shell
+	$(DC_PROD) exec django python /app/app/manage.py shell
 
 prod-superuser:
-	docker compose --env-file .env.prod -f $(PROD_COMPOSE) exec django python /app/app/manage.py createsuperuser
+	$(DC_PROD) exec django python /app/app/manage.py createsuperuser
