@@ -15,6 +15,7 @@ import Risk from "./routes/app/Risk";
 import Journal from "./routes/app/Journal";
 import Feedback from "./routes/app/Feedback";
 import Account from "./routes/app/Account";
+import Scanner from "./routes/app/Scanner";
 
 import { getTokens } from "@/lib/auth";
 
@@ -50,6 +51,7 @@ const routes: RouteObject[] = [
           { index: true, element: <Dashboard /> },
           { path: "risk", element: <Risk /> },
           { path: "journal", element: <Journal /> },
+          { path: "scanner", element: <Scanner /> },
           { path: "feedback", element: <Feedback /> },
           { path: "account", element: <Account /> },
 

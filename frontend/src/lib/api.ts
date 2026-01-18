@@ -1073,4 +1073,72 @@ const api = {
     apiFetch(path, { ...opts, method: "DELETE" }),
 };
 
+// ----------------------------- Scanner API ------------------------------
+export async function fetchScannerConfig() {
+  const res = await authedFetch("/api/scanner/config/1/");
+  if (!res.ok) throw new Error("Failed to fetch scanner config");
+  return await res.json();
+}
+
+export async function updateScannerConfig(patch: Record<string, any>) {
+  const res = await authedFetch("/api/scanner/config/1/", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("Failed to update scanner config");
+  return await res.json();
+}
+
+export async function listScannerUniverse() {
+  const res = await authedFetch("/api/scanner/universe/?page_size=200");
+  if (!res.ok) throw new Error("Failed to list scanner universe");
+  const j = await res.json();
+  return j.results ?? j; // supports paginated or not
+}
+
+export async function addScannerUniverseTicker(symbol: string) {
+  const res = await authedFetch("/api/scanner/universe/", {
+    method: "POST",
+    body: JSON.stringify({ symbol }),
+  });
+  if (!res.ok) throw new Error("Failed to add universe ticker");
+  return await res.json();
+}
+
+export async function deleteScannerUniverseTicker(id: number) {
+  const res = await authedFetch(`/api/scanner/universe/${id}/`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete universe ticker");
+}
+
+export async function listScannerTriggers(limit = 25) {
+  const res = await authedFetch(`/api/scanner/triggers/?page_size=${limit}`);
+  if (!res.ok) throw new Error("Failed to list triggers");
+  const j = await res.json();
+  return j.results ?? j;
+}
+
+export async function fetchScannerPreferences() {
+  const res = await authedFetch("/api/scanner/preferences/1/");
+  if (!res.ok) throw new Error("Failed to fetch scanner preferences");
+  return await res.json();
+}
+
+export async function updateScannerPreferences(patch: Record<string, any>) {
+  const res = await authedFetch("/api/scanner/preferences/1/", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("Failed to update scanner preferences");
+  return await res.json();
+}
+
+export async function emitScannerTestEvent(symbol: string) {
+  const res = await authedFetch("/api/scanner/admin/emit_test_event/", {
+    method: "POST",
+    body: JSON.stringify({ symbol }),
+  });
+  if (!res.ok) throw new Error("Failed to emit test event");
+  return await res.json();
+}
+
 export default api;

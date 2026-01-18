@@ -167,6 +167,61 @@ services:
       - NET_ADMIN
       - SYS_PTRACE
 
+  celery-worker:
+    user: "${UID:-1000}:${GID:-1000}"
+    build:
+      context: ./django
+    env_file: .env.prod
+    command: ["bash", "/app/entrypoint-celery.sh", "worker"]
+    volumes:
+      - ./.env.prod:/app/.env.prod:ro
+      - ./django/app/staticfiles:/app/app/staticfiles
+      - ./django/app/media:/app/app/media
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  celery-beat:
+    user: "${UID:-1000}:${GID:-1000}"
+    build:
+      context: ./django
+    env_file: .env.prod
+    command: ["bash", "/app/entrypoint-celery.sh", "beat"]
+    volumes:
+      - ./.env.prod:/app/.env.prod:ro
+      - ./django/app/staticfiles:/app/app/staticfiles
+      - ./django/app/media:/app/app/media
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  scanner-ingestor:
+    user: "${UID:-1000}:${GID:-1000}"
+    build:
+      context: ./django
+    env_file: .env.prod
+    entrypoint: []
+    command: ["python", "/app/app/manage.py", "scanner_ingest_ws", "--universe-poll-seconds", "10", "--keep", "180", "--heartbeat-seconds", "30"]
+    volumes:
+      - ./.env.prod:/app/.env.prod:ro
+      - ./django/app/staticfiles:/app/app/staticfiles
+      - ./django/app/media:/app/app/media
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
 networks:
   web:
   internal:

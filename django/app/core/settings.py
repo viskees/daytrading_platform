@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import environ
 from datetime import timedelta
+from celery.schedules import crontab
 
 # --------------------------------------------------------------------------------------
 # Base
@@ -56,12 +57,14 @@ INSTALLED_APPS = [
     'django_otp.plugins.otp_static',
     'django_otp.plugins.otp_totp',
     'two_factor',
+    "django_celery_beat",
 
     # Local
     'journal',
     'accounts',
     'feedback',
     'notifications.apps.NotificationsConfig',
+    'scanner.apps.ScannerAppConfig',
 
     # DRF
     'rest_framework_simplejwt.token_blacklist',
@@ -169,10 +172,15 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.UserRateThrottle",
         "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.ScopedRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        "user": "1000/day",
-        "anon": "200/day",
+        "anon": "60/min",
+        "user": "600/min",
+        # scoped (per-view)
+        "scanner_triggers": "240/min",   # 1 request / 0.25s (plenty even with 5s polling)
+        "scanner_read": "120/min",
+        "scanner_write": "30/min",
         # password reset request
         "password_reset_ip": "5/hour",
         "password_reset_email": "3/hour",
@@ -180,7 +188,7 @@ REST_FRAMEWORK = {
         "password_reset_confirm_ip": "20/hour",
         "password_reset_confirm_uid": "10/hour",
 
-        # login hardening (optional but recommended)
+        # login hardening
         "login_ip": "20/hour",
         "login_email": "10/hour",
     },
@@ -264,3 +272,14 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 PASSWORD_RESET_LOGOUT_ALL = env.bool("PASSWORD_RESET_LOGOUT_ALL", default=True)
+
+SCANNER_ADMIN_EMAIL = env("SCANNER_ADMIN_EMAIL", default="")
+# --------------------------------------------------------------------------------------
+
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
+
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "Europe/Amsterdam"
