@@ -3,7 +3,6 @@ from pathlib import Path
 import os
 import environ
 from datetime import timedelta
-from celery.schedules import crontab
 
 # --------------------------------------------------------------------------------------
 # Base
@@ -203,23 +202,14 @@ REST_FRAMEWORK = {
 # Cache (important for throttling to be shared across containers)
 # --------------------------------------------------------------------------------------
 # Use Redis in production if REDIS_URL is set. Safe fallback for dev.
-REDIS_URL = env("REDIS_URL", default="")
+REDIS_URL = env("REDIS_URL", default="redis://redis:6379/1")
 
-if REDIS_URL:
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.redis.RedisCache",
-            "LOCATION": REDIS_URL,
-        }
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": REDIS_URL,
     }
-else:
-    # fallback (dev / single-container)
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-            "LOCATION": "local-dev",
-        }
-    }
+}
 
 
 # --------------------------------------------------------------------------------------

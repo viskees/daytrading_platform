@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True, ignore_result=False)
-def scanner_tick(self) -> int:
+def scanner_tick(self) -> None:
     """
     Runs the scanner engine once (intended every 60s via Celery beat).
 

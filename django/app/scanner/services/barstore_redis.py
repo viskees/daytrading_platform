@@ -6,6 +6,7 @@ from typing import Iterable, List, Optional
 
 from django.conf import settings
 from django.utils import timezone
+from datetime import timezone as dt_timezone
 
 import redis
 
@@ -56,6 +57,10 @@ def fetch_bars(symbols: Iterable[str], minutes: int) -> dict[str, List[Bar1m]]:
             try:
                 d = json.loads(s)
                 ts = timezone.datetime.fromisoformat(d["ts"])
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=dt_timezone.utc)
+                else:
+                    ts = ts.astimezone(dt_timezone.utc)
                 bars.append(
                     Bar1m(
                         ts=ts,
