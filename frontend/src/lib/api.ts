@@ -1141,4 +1141,17 @@ export async function emitScannerTestEvent(symbol: string) {
   return await res.json();
 }
 
+// ---------------------- Scanner WebSocket helpers ----------------------
+export function scannerTriggersWsUrl(): string {
+  // In dev you run behind Traefik on https://localhost, so use wss.
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}/ws/scanner/triggers/`;
+}
+
+export async function clearScannerTriggers() {
+  const res = await authedFetch("/api/scanner/triggers/clear/", { method: "POST" });
+  if (!res.ok) throw new Error("Failed to clear triggers");
+  return await res.json(); // { detail, cleared_until }
+}
+
 export default api;

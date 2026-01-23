@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,8 @@ import {
   fetchScannerPreferences,
   updateScannerPreferences,
   emitScannerTestEvent,
+  scannerTriggersWsUrl,
+  clearScannerTriggers,
 } from "@/lib/api";
 
 type ScannerConfig = {
@@ -46,6 +48,27 @@ type TriggerEvent = {
   score?: number | null;
 };
 
+// WS message shape you’re sending from backend
+type WsHello = { type: "hello"; user_id: number };
+type WsTrigger = { type: "trigger"; ts?: number } & TriggerEvent;
+type WsMsg = WsHello | WsTrigger | Record<string, any>;
+
+function prependDedupeLimit(prev: TriggerEvent[], nextEv: TriggerEvent, limit: number) {
+  const id = nextEv?.id;
+  if (typeof id !== "number") return prev;
+
+  // If we already have it, replace in place (keeps ordering stable)
+  const idx = prev.findIndex((x) => x.id === id);
+  if (idx >= 0) {
+    const copy = prev.slice();
+    copy[idx] = nextEv;
+    return copy.slice(0, limit);
+  }
+
+  // New event: prepend
+  return [nextEv, ...prev].slice(0, limit);
+}
+
 export default function Scanner() {
   const [cfg, setCfg] = useState<ScannerConfig | null>(null);
   const [prefs, setPrefs] = useState<{ follow_alerts: boolean } | null>(null);
@@ -53,7 +76,14 @@ export default function Scanner() {
   const [triggers, setTriggers] = useState<TriggerEvent[]>([]);
   const [newSymbol, setNewSymbol] = useState("");
 
+  const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error">("closed");
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const backoffRef = useRef<number>(1000);
+  const aliveRef = useRef<boolean>(true);
+
   const canEdit = !!cfg?.can_edit;
+  const wsUrl = useMemo(() => scannerTriggersWsUrl(), []);
 
   async function refreshAll() {
     const [c, u, p] = await Promise.all([
@@ -71,28 +101,122 @@ export default function Scanner() {
     setTriggers(t);
   }
 
- const FAST = 15000;
-const SLOW = 60000;
+  // ---- WS connect + reconnect loop ----
+  useEffect(() => {
+    aliveRef.current = true;
 
-useEffect(() => {
-  let id: number | null = null;
+    const clearReconnect = () => {
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
 
-  const start = () => {
-    if (id) window.clearInterval(id);
-    const ms = document.visibilityState === "visible" ? FAST : SLOW;
-    id = window.setInterval(() => refreshTriggers(), ms);
-  };
+    const cleanupWs = () => {
+      clearReconnect();
+      const ws = wsRef.current;
+      wsRef.current = null;
+      if (ws) {
+        try {
+          ws.onopen = null;
+          ws.onclose = null;
+          ws.onerror = null;
+          ws.onmessage = null;
+          ws.close();
+        } catch {}
+      }
+    };
 
-  refreshAll();
-  refreshTriggers();
-  start();
+    const scheduleReconnect = () => {
+      if (!aliveRef.current) return;
+      clearReconnect();
 
-  document.addEventListener("visibilitychange", start);
-  return () => {
-    if (id) window.clearInterval(id);
-    document.removeEventListener("visibilitychange", start);
-  };
-}, []);
+      // Exponential backoff with cap
+      const delay = Math.min(backoffRef.current, 30000);
+      backoffRef.current = Math.min(backoffRef.current * 1.8, 30000);
+
+      reconnectTimerRef.current = window.setTimeout(() => {
+        connect();
+      }, delay);
+    };
+
+    const connect = () => {
+      if (!aliveRef.current) return;
+
+      // Avoid multiple sockets
+      cleanupWs();
+
+      setWsStatus("connecting");
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (e) {
+        setWsStatus("error");
+        scheduleReconnect();
+        return;
+      }
+
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (!aliveRef.current) return;
+        backoffRef.current = 1000; // reset after success
+        setWsStatus("open");
+      };
+
+      ws.onmessage = (ev) => {
+        if (!aliveRef.current) return;
+
+        let msg: WsMsg | null = null;
+        try {
+          msg = JSON.parse(String(ev.data || ""));
+        } catch {
+          return;
+        }
+        if (!msg || typeof msg !== "object") return;
+
+        // hello
+        if ((msg as any).type === "hello") {
+          return;
+        }
+
+        // trigger payloads
+        if ((msg as any).type === "trigger") {
+          const t = msg as WsTrigger;
+          if (typeof t.id === "number") {
+            setTriggers((prev) => prependDedupeLimit(prev, t, 25));
+          }
+          return;
+        }
+      };
+
+      ws.onerror = () => {
+        if (!aliveRef.current) return;
+        setWsStatus("error");
+        // errors usually followed by close; but just in case:
+      };
+
+      ws.onclose = () => {
+        if (!aliveRef.current) return;
+        setWsStatus("closed");
+        scheduleReconnect();
+      };
+    };
+
+    // Boot: config/universe/prefs + initial REST triggers once
+    refreshAll();
+    refreshTriggers();
+
+    // Start WS
+    connect();
+
+    return () => {
+      aliveRef.current = false;
+      cleanupWs();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsUrl]);
 
   return (
     <div className="space-y-6">
@@ -100,7 +224,13 @@ useEffect(() => {
       <Card>
         <CardContent className="space-y-3">
           <div className="flex flex-row items-center justify-between">
-            <div className="text-lg font-semibold">Triggered tickers</div>
+            <div className="text-lg font-semibold flex items-center gap-3">
+              <span>Triggered tickers</span>
+              <span className="text-xs opacity-70">
+                WS: {wsStatus}
+              </span>
+            </div>
+
             <div className="flex items-center gap-3 text-sm">
               <span>Follow alerts</span>
               <Switch
@@ -142,19 +272,39 @@ useEffect(() => {
             </div>
           )}
 
-          {canEdit && (
-            <div className="pt-3">
+          <div className="pt-3 flex gap-2">
+              {canEdit && (
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    await emitScannerTestEvent("TEST");
+                  }}
+                >
+                  Emit test event
+                </Button>
+              )}
+            
               <Button
                 variant="outline"
                 onClick={async () => {
-                  await emitScannerTestEvent("TEST");
                   await refreshTriggers();
                 }}
               >
-                Emit test event
+                Refresh (REST)
+              </Button>
+            
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  await clearScannerTriggers();
+                  setTriggers([]);          // instant UX
+                  // optional safety:
+                  // await refreshTriggers(); // should return empty after clear
+                }}
+              >
+                Clear
               </Button>
             </div>
-          )}
         </CardContent>
       </Card>
 
@@ -171,7 +321,7 @@ useEffect(() => {
               <div className="flex gap-2">
                 <Input
                   value={newSymbol}
-                  placeholder="Add symbol (e.g. AUDI)"
+                  placeholder="Add symbol (e.g. AAPL)"
                   onChange={(e) => setNewSymbol(e.target.value)}
                 />
                 <Button
@@ -247,7 +397,9 @@ useEffect(() => {
                     label="Lookback (min)"
                     value={cfg.rvol_lookback_minutes}
                     disabled={!canEdit}
-                    onSave={async (v) => setCfg(await updateScannerConfig({ rvol_lookback_minutes: v }))}
+                    onSave={async (v) =>
+                      setCfg(await updateScannerConfig({ rvol_lookback_minutes: v }))
+                    }
                   />
                   <Field
                     label="rVol 1m thr"

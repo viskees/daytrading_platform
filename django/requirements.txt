@@ -16,3 +16,5 @@ celery==5.4.*
 django-celery-beat==2.6.*
 #alpaca-py
 ib_insync
+channels>=4.0
+channels-redis>=4.2

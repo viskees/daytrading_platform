@@ -64,5 +64,5 @@ class ScannerTriggerEventSerializer(serializers.ModelSerializer):
 class UserScannerSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserScannerSettings
-        fields = ["follow_alerts", "updated_at"]
+        fields = ["follow_alerts", "cleared_until", "updated_at"]
         read_only_fields = ["updated_at"]

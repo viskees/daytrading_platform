@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     'django_otp.plugins.otp_totp',
     'two_factor',
     "django_celery_beat",
+    "channels",
 
     # Local
     'journal',
@@ -68,6 +69,7 @@ INSTALLED_APPS = [
     # DRF
     'rest_framework_simplejwt.token_blacklist',
 ]
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -203,6 +205,13 @@ REST_FRAMEWORK = {
 # --------------------------------------------------------------------------------------
 # Use Redis in production if REDIS_URL is set. Safe fallback for dev.
 REDIS_URL = env("REDIS_URL", default="redis://redis:6379/1")
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [REDIS_URL]},
+    }
+}
 
 CACHES = {
     "default": {

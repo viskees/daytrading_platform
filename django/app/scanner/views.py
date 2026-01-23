@@ -13,18 +13,15 @@ from .serializers import (
     UserScannerSettingsSerializer,
 )
 from .permissions import IsScannerAdminOrReadOnly, is_scanner_admin
+from .services.realtime import publish_trigger_event_to_users
 
 
 class ScannerConfigViewSet(mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
-    """
-    Global singleton config. Readable by all logged-in users.
-    Editable only by scanner admin.
-    """
     permission_classes = [IsAuthenticated, IsScannerAdminOrReadOnly]
     serializer_class = ScannerConfigSerializer
 
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "scanner_read"   # GET fairly often; PATCH occasional
+    throttle_scope = "scanner_read"
 
     def get_object(self):
         obj, _ = ScannerConfig.objects.get_or_create(id=1)
@@ -32,40 +29,56 @@ class ScannerConfigViewSet(mixins.RetrieveModelMixin, mixins.UpdateModelMixin, v
 
 
 class ScannerUniverseTickerViewSet(viewsets.ModelViewSet):
-    """
-    Global ticker universe. Everyone can read; only admin can modify.
-    """
     permission_classes = [IsAuthenticated, IsScannerAdminOrReadOnly]
     serializer_class = ScannerUniverseTickerSerializer
     queryset = ScannerUniverseTicker.objects.all()
 
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "scanner_read"   # list is read-heavy; writes are protected by permission
+    throttle_scope = "scanner_read"
 
 
 class ScannerTriggerEventViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     """
-    Global trigger feed visible to all authenticated users.
+    Global trigger feed visible to all authenticated users,
+    but filtered per-user by their cleared_until timestamp.
     """
     permission_classes = [IsAuthenticated]
     serializer_class = ScannerTriggerEventSerializer
     queryset = ScannerTriggerEvent.objects.all()
 
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "scanner_triggers"  # this is the polling endpoint
+    throttle_scope = "scanner_triggers"
 
     def get_queryset(self):
         qs = super().get_queryset()
+
+        # Per-user "clear feed" filter
+        settings_obj, _ = UserScannerSettings.objects.get_or_create(user=self.request.user)
+        if settings_obj.cleared_until:
+            qs = qs.filter(triggered_at__gt=settings_obj.cleared_until)
+
         symbol = self.request.query_params.get("symbol")
         if symbol:
             qs = qs.filter(symbol__iexact=symbol)
+
         return qs
+
+    @action(detail=False, methods=["post"])
+    def clear(self, request):
+        """
+        Clear the trigger list for the current user (does NOT delete global events).
+        Sets UserScannerSettings.cleared_until = now.
+        """
+        settings_obj, _ = UserScannerSettings.objects.get_or_create(user=request.user)
+        settings_obj.cleared_until = timezone.now()
+        settings_obj.save(update_fields=["cleared_until", "updated_at"])
+        return Response(
+            {"detail": "cleared", "cleared_until": settings_obj.cleared_until},
+            status=status.HTTP_200_OK,
+        )
 
 
 class UserScannerSettingsViewSet(mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
-    """
-    Per-user preferences. Each user can only access their own settings.
-    """
     permission_classes = [IsAuthenticated]
     serializer_class = UserScannerSettingsSerializer
 
@@ -78,14 +91,10 @@ class UserScannerSettingsViewSet(mixins.RetrieveModelMixin, mixins.UpdateModelMi
 
 
 class ScannerAdminViewSet(viewsets.ViewSet):
-    """
-    Admin-only convenience actions (MVP):
-    - trigger a 'test event' to validate UI wiring without running the engine yet.
-    """
     permission_classes = [IsAuthenticated]
 
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "scanner_write"  # keep admin actions protected
+    throttle_scope = "scanner_write"
 
     def _require_admin(self, request):
         if not is_scanner_admin(request.user):
@@ -106,4 +115,12 @@ class ScannerAdminViewSet(viewsets.ViewSet):
             score=0,
             config_snapshot={"test": True},
         )
-        return Response(ScannerTriggerEventSerializer(ev).data, status=201)
+
+        payload = ScannerTriggerEventSerializer(ev).data
+
+        follower_ids = list(
+            UserScannerSettings.objects.filter(follow_alerts=True).values_list("user_id", flat=True)
+        )
+        publish_trigger_event_to_users(follower_ids, payload)
+
+        return Response(payload, status=201)

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from django.utils import timezone
 
-from scanner.models import ScannerConfig, ScannerUniverseTicker, ScannerTriggerEvent
+from scanner.models import ScannerConfig, ScannerUniverseTicker, ScannerTriggerEvent, UserScannerSettings
+from scanner.serializers import ScannerTriggerEventSerializer
 from scanner.services.barstore_redis import fetch_bars
+from scanner.services.realtime import publish_trigger_event_to_users
 from scanner.services.types import Bar1m
 
 
@@ -30,7 +32,7 @@ class Metrics:
 
 def compute_metrics(symbol: str, bars: List[Bar1m], lookback_minutes: int) -> Optional[Tuple[Metrics, Dict]]:
     """
-    bars: newest-last or oldest-first? We'll assume oldest-first input.
+    bars: assumed oldest-first input.
     returns Metrics for the last bar.
     """
     if not bars:
@@ -95,7 +97,6 @@ def compute_metrics(symbol: str, bars: List[Bar1m], lookback_minutes: int) -> Op
         score=score,
         reason_tags=reason_tags,
     )
-    # return also some raw computed pieces if needed later
     return m, {}
 
 
@@ -143,6 +144,20 @@ def in_cooldown(symbol: str, now: datetime, cooldown_minutes: int) -> bool:
     cutoff = now - timedelta(minutes=cooldown_minutes)
     return ScannerTriggerEvent.objects.filter(symbol=symbol, triggered_at__gte=cutoff).exists()
 
+
+def _dedupe_tags(tags: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for t in tags:
+        if not t:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
 def run_engine_once(now: Optional[datetime] = None) -> int:
     """
     Run one full scanner pass over the universe using bars buffered in Redis.
@@ -156,9 +171,7 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
     if not cfg.enabled:
         return 0
 
-    symbols = list(
-        ScannerUniverseTicker.objects.filter(enabled=True).values_list("symbol", flat=True)
-    )
+    symbols = list(ScannerUniverseTicker.objects.filter(enabled=True).values_list("symbol", flat=True))
     symbols = [s.upper().strip() for s in symbols if s and s.strip()]
     if not symbols:
         return 0
@@ -166,7 +179,14 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
     # Fetch enough bars for metrics calculation
     bars_map = fetch_bars(symbols, minutes=cfg.rvol_lookback_minutes)
 
+    # Who should receive realtime alerts?
+    follower_ids = list(
+        UserScannerSettings.objects.filter(follow_alerts=True).values_list("user_id", flat=True)
+    )
+
     created = 0
+
+    
 
     for sym in symbols:
         bars = bars_map.get(sym) or []
@@ -185,13 +205,12 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
             continue
 
         # Persist trigger event
-        ScannerTriggerEvent.objects.create(
+        ev = ScannerTriggerEvent.objects.create(
             symbol=sym,
             triggered_at=now,
-            reason_tags=decision_tags + (m.reason_tags or []),
+            reason_tags=_dedupe_tags(decision_tags + (m.reason_tags or [])),
 
             o=m.bar.o, h=m.bar.h, l=m.bar.l, c=m.bar.c, v=m.bar.v,
-
             last_price=m.bar.c,
 
             vol_1m=m.vol_1m,
@@ -225,5 +244,13 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
             },
         )
         created += 1
+
+        # Realtime broadcast (payload matches REST serializer)
+        try:
+            payload = ScannerTriggerEventSerializer(ev).data
+            publish_trigger_event_to_users(follower_ids, payload)
+        except Exception:
+            # Engine should never crash because realtime failed
+            pass
 
     return created

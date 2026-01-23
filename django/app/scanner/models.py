@@ -101,8 +101,15 @@ class UserScannerSettings(models.Model):
     Per-user preference: follow scanner or not.
     (Later: channel preferences, muted symbols, etc.)
     """
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="scanner_settings")
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="scanner_settings",
+    )
     follow_alerts = models.BooleanField(default=True)
+
+    # NEW: "Clear feed" marker. Users only see triggers AFTER this timestamp.
+    cleared_until = models.DateTimeField(null=True, blank=True)
 
     updated_at = models.DateTimeField(auto_now=True)
 
