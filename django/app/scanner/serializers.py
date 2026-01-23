@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import serializers
 from .models import ScannerConfig, ScannerUniverseTicker, ScannerTriggerEvent, UserScannerSettings
 
@@ -42,6 +43,12 @@ class ScannerUniverseTickerSerializer(serializers.ModelSerializer):
 
 
 class ScannerTriggerEventSerializer(serializers.ModelSerializer):
+    # --- Computed fields (daytrader-useful) ---
+    candle_color = serializers.SerializerMethodField()
+    candle_pct = serializers.SerializerMethodField()
+    hod_distance_pct = serializers.SerializerMethodField()
+    trigger_age_seconds = serializers.SerializerMethodField()
+
     class Meta:
         model = ScannerTriggerEvent
         fields = [
@@ -58,7 +65,76 @@ class ScannerTriggerEventSerializer(serializers.ModelSerializer):
             "hod", "broke_hod",
             "score",
             "config_snapshot",
+
+            # computed
+            "candle_color",
+            "candle_pct",
+            "hod_distance_pct",
+            "trigger_age_seconds",
         ]
+
+    def _to_float(self, x):
+        try:
+            if x is None:
+                return None
+            return float(x)
+        except Exception:
+            return None
+
+    def get_candle_color(self, obj: ScannerTriggerEvent):
+        """
+        GREEN if close >= open, RED if close < open.
+        DOJI if open/close nearly equal (tiny epsilon).
+        """
+        o = self._to_float(getattr(obj, "o", None))
+        c = self._to_float(getattr(obj, "c", None))
+        if o is None or c is None:
+            return None
+        eps = max(abs(o) * 0.0001, 1e-8)  # ~1bp relative
+        if abs(c - o) <= eps:
+            return "DOJI"
+        return "GREEN" if c > o else "RED"
+
+    def get_candle_pct(self, obj: ScannerTriggerEvent):
+        """
+        Percent move of the trigger candle: (c - o) / o * 100
+        """
+        o = self._to_float(getattr(obj, "o", None))
+        c = self._to_float(getattr(obj, "c", None))
+        if o is None or c is None:
+            return None
+        if abs(o) < 1e-9:
+            return None
+        return (c - o) / o * 100.0
+
+    def get_hod_distance_pct(self, obj: ScannerTriggerEvent):
+        """
+        Distance from current/last price to HOD in percent.
+        Positive means price is below HOD.
+        """
+        hod = self._to_float(getattr(obj, "hod", None))
+        last_price = self._to_float(getattr(obj, "last_price", None))
+        if last_price is None:
+            # fallback to candle close
+            last_price = self._to_float(getattr(obj, "c", None))
+        if hod is None or last_price is None:
+            return None
+        if abs(last_price) < 1e-9:
+            return None
+        return (hod - last_price) / last_price * 100.0
+
+    def get_trigger_age_seconds(self, obj: ScannerTriggerEvent):
+        """
+        Seconds since trigger time (server time).
+        """
+        ts = getattr(obj, "triggered_at", None)
+        if not ts:
+            return None
+        now = timezone.now()
+        try:
+            return max(0, int((now - ts).total_seconds()))
+        except Exception:
+            return None
 
 
 class UserScannerSettingsSerializer(serializers.ModelSerializer):

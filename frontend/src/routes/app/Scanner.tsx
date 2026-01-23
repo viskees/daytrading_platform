@@ -46,6 +46,10 @@ type TriggerEvent = {
   vol_1m?: number | null;
   pct_change_1m?: number | null;
   score?: number | null;
+  candle_color?: "GREEN" | "RED" | "DOJI" | null;
+  candle_pct?: number | null;
+  hod_distance_pct?: number | null;
+  trigger_age_seconds?: number | null;
 };
 
 // WS message shape you’re sending from backend
@@ -266,6 +270,10 @@ export default function Scanner() {
                       <span>%1m: {Number(e.pct_change_1m).toFixed(2)}%</span>
                     )}
                     {e.score != null && <span>Score: {Number(e.score).toFixed(0)}</span>}
+                    {e.candle_color && <span>Candle: {e.candle_color}</span>}
+                    {e.candle_pct != null && <span>Cndl%: {Number(e.candle_pct).toFixed(2)}%</span>}
+                    {e.hod_distance_pct != null && <span>to HOD: {Number(e.hod_distance_pct).toFixed(2)}%</span>}
+                    {e.trigger_age_seconds != null && <span>Age: {Math.round(Number(e.trigger_age_seconds) / 60)}m</span>}
                   </div>
                 </div>
               ))}
@@ -283,7 +291,7 @@ export default function Scanner() {
                   Emit test event
                 </Button>
               )}
-            
+
               <Button
                 variant="outline"
                 onClick={async () => {
