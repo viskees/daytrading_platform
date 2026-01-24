@@ -1,8 +1,13 @@
+// frontend/src/routes/app/Scanner.tsx
+// Adds: click-to-expand per trigger row, showing 5m values + hides raw "Why" behind expand.
+// Also auto-expands rows that triggered primarily on 5m conditions.
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
 import {
   fetchScannerConfig,
   updateScannerConfig,
@@ -41,14 +46,25 @@ type TriggerEvent = {
   symbol: string;
   triggered_at: string;
   reason_tags: string[];
+
   last_price?: number | null;
+
   rvol_1m?: number | null;
+  rvol_5m?: number | null;
+
   vol_1m?: number | null;
+  vol_5m?: number | null;
+
   pct_change_1m?: number | null;
+  pct_change_5m?: number | null;
+
+  hod_distance_pct?: number | null;
+  broke_hod?: boolean | null;
+
   score?: number | null;
+
   candle_color?: "GREEN" | "RED" | "DOJI" | null;
   candle_pct?: number | null;
-  hod_distance_pct?: number | null;
   trigger_age_seconds?: number | null;
 };
 
@@ -71,6 +87,257 @@ function prependDedupeLimit(prev: TriggerEvent[], nextEv: TriggerEvent, limit: n
 
   // New event: prepend
   return [nextEv, ...prev].slice(0, limit);
+}
+
+/* =========================
+   Trader-friendly helpers
+   (frontend-only interpretation)
+   ========================= */
+
+function n(x: any): number | null {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : null;
+}
+
+function fmtK(v: number | null) {
+  if (v == null) return "—";
+  const a = Math.abs(v);
+  if (a >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (a >= 1_000) return `${Math.round(v / 1_000)}k`;
+  return `${Math.round(v)}`;
+}
+
+function fmtPct(v: number | null, digits = 2) {
+  if (v == null) return "—";
+  const s = v >= 0 ? "+" : "";
+  return `${s}${v.toFixed(digits)}%`;
+}
+
+function fmtPx(v: number | null) {
+  if (v == null) return "—";
+  if (v < 1) return v.toFixed(4);
+  if (v < 10) return v.toFixed(3);
+  return v.toFixed(2);
+}
+
+function ageMin(ageSeconds: number | null) {
+  if (ageSeconds == null) return "—";
+  return `${Math.max(0, Math.round(ageSeconds / 60))}m`;
+}
+
+function hasTag(e: TriggerEvent, tag: string) {
+  return Array.isArray(e?.reason_tags) && e.reason_tags.includes(tag);
+}
+
+/**
+ * Flames should mean “hot”.
+ * 0 flames for < 1.0x is important (don’t hype dead rVol).
+ */
+function rvolFlames(rvol1m: number | null): { flames: number; text: string } {
+  if (rvol1m == null) return { flames: 0, text: "—" };
+  const flames = rvol1m >= 4.0 ? 3 : rvol1m >= 2.0 ? 2 : rvol1m >= 1.0 ? 1 : 0;
+  return { flames, text: `${rvol1m.toFixed(2)}x` };
+}
+
+function headlineLabel(e: TriggerEvent): string {
+  if (e.broke_hod || hasTag(e, "HOD_BREAK")) return "HOD Breakout";
+
+  const r1 = n(e.rvol_1m);
+  const p1 = n(e.pct_change_1m);
+  const p5 = n(e.pct_change_5m);
+
+  if (r1 != null && p1 != null && r1 >= 3.0 && p1 >= 2.0) return "Momentum ignition";
+  if (p5 != null && p5 >= 5.0) return "Momentum run";
+  return "Volume pop";
+}
+
+/**
+ * HOD proximity status:
+ * hod_distance_pct = (HOD - last)/last * 100
+ * small => near HOD (breakout context)
+ * large => far below HOD (pullback/room)
+ */
+function hodStatus(e: TriggerEvent): { label: string; variant: any } {
+  const d = n(e.hod_distance_pct);
+  if (d == null) return { label: "HOD: —", variant: "outline" };
+
+  if (d <= 0.75) return { label: "NEAR HOD", variant: "success" };
+  if (d <= 2.0) return { label: "IN RANGE", variant: "secondary" };
+  if (d <= 5.0) return { label: "PULLBACK", variant: "info" };
+  return { label: "FAR FROM HOD", variant: "warn" };
+}
+
+function candleVariant(c: TriggerEvent["candle_color"]): any {
+  if (c === "GREEN") return "success";
+  if (c === "RED") return "danger";
+  if (c === "DOJI") return "outline";
+  return "secondary";
+}
+
+function FlameRow({ rvol1m }: { rvol1m: number | null }) {
+  const { flames, text } = rvolFlames(rvol1m);
+  const icons = flames <= 0 ? "—" : "🔥".repeat(flames);
+  return (
+    <span className="flex items-center gap-2">
+      <span className="text-base leading-none">{icons}</span>
+      <span className="opacity-80">
+        rVol: <span className="font-semibold">{text}</span>
+      </span>
+    </span>
+  );
+}
+
+/**
+ * If the trigger was primarily due to 5m conditions,
+ * we want to auto-expand it so the trader immediately sees %5m + rVol5m.
+ */
+function shouldAutoExpand(e: TriggerEvent): boolean {
+  const tags = e.reason_tags || [];
+  const has5m =
+    tags.includes("PCT_5M_THR") ||
+    tags.includes("RVOL_5M_THR") ||
+    tags.includes("RVOL_5M");
+  const has1m =
+    tags.includes("PCT_1M_THR") ||
+    tags.includes("RVOL_1M_THR") ||
+    tags.includes("RVOL_1M");
+
+  // auto-expand if 5m present and 1m not strongly present
+  return !!has5m && !has1m;
+}
+
+function TriggerRow({ e }: { e: TriggerEvent }) {
+  const [expanded, setExpanded] = useState<boolean>(() => shouldAutoExpand(e));
+
+  // If a WS update replaces this row with same id but different tags,
+  // we don't want to constantly collapse/expand. So we only auto-expand
+  // if it was previously collapsed AND now qualifies.
+  useEffect(() => {
+    if (!expanded && shouldAutoExpand(e)) setExpanded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [e.id]);
+
+  const ts = new Date(e.triggered_at).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
+  const label = headlineLabel(e);
+
+  const r1 = n(e.rvol_1m);
+  const r5 = n(e.rvol_5m);
+
+  const v1 = n(e.vol_1m);
+  const v5 = n(e.vol_5m);
+
+  const p1 = n(e.pct_change_1m);
+  const p5 = n(e.pct_change_5m);
+
+  const cndlPct = n(e.candle_pct);
+  const toHod = n(e.hod_distance_pct);
+  const score = n(e.score);
+  const age = n(e.trigger_age_seconds);
+  const px = n(e.last_price);
+
+  const hod = hodStatus(e);
+  const why = (e.reason_tags || []).filter(Boolean);
+
+  // small hint: show an expand affordance
+  const expandText = expanded ? "Less" : "More";
+
+  return (
+    <div className="border rounded-md p-3 space-y-2">
+      {/* top line */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="text-lg font-semibold">{e.symbol}</div>
+          <div className="text-xs opacity-70">{ts}</div>
+
+          <Badge variant="info">{label}</Badge>
+
+          <span className="text-sm opacity-80">
+            Px: <span className="font-semibold">{fmtPx(px)}</span>
+          </span>
+
+          {score != null && (
+            <span className="text-sm opacity-80">
+              Score: <span className="font-semibold">{Math.round(score)}</span>
+            </span>
+          )}
+
+          <span className="text-sm opacity-80">
+            Age: <span className="font-semibold">{ageMin(age)}</span>
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Badge variant={hod.variant}>{hod.label}</Badge>
+
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => setExpanded((v) => !v)}
+            className="h-7 px-2 text-xs"
+          >
+            {expandText}
+          </Button>
+        </div>
+      </div>
+
+      {/* middle line (always visible) */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+        <FlameRow rvol1m={r1} />
+
+        <span className="opacity-80">
+          Vol 1m: <span className="font-semibold">{fmtK(v1)}</span>
+        </span>
+
+        <span className="opacity-80">
+          %1m: <span className="font-semibold">{fmtPct(p1, 2)}</span>
+        </span>
+
+        {e.candle_color && (
+          <span className="flex items-center gap-2">
+            <Badge variant={candleVariant(e.candle_color)}>{e.candle_color}</Badge>
+            <span className="opacity-80">({cndlPct != null ? fmtPct(cndlPct, 2) : "—"})</span>
+          </span>
+        )}
+
+        <span className="opacity-80">
+          To HOD: <span className="font-semibold">{toHod != null ? fmtPct(toHod, 2) : "—"}</span>
+        </span>
+      </div>
+
+      {/* expand panel */}
+      {expanded && (
+        <div className="rounded-md border border-slate-800/60 bg-slate-950/40 p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <Badge variant="outline">5m context</Badge>
+
+            <span className="opacity-80">
+              rVol 5m: <span className="font-semibold">{r5 != null ? `${r5.toFixed(2)}x` : "—"}</span>
+            </span>
+
+            <span className="opacity-80">
+              Vol 5m: <span className="font-semibold">{fmtK(v5)}</span>
+            </span>
+
+            <span className="opacity-80">
+              %5m: <span className="font-semibold">{fmtPct(p5, 2)}</span>
+            </span>
+          </div>
+
+          {why.length > 0 && (
+            <div className="text-xs opacity-60">
+              Why: {why.join(", ")}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function Scanner() {
@@ -105,7 +372,6 @@ export default function Scanner() {
     setTriggers(t);
   }
 
-  // ---- WS connect + reconnect loop ----
   useEffect(() => {
     aliveRef.current = true;
 
@@ -135,7 +401,6 @@ export default function Scanner() {
       if (!aliveRef.current) return;
       clearReconnect();
 
-      // Exponential backoff with cap
       const delay = Math.min(backoffRef.current, 30000);
       backoffRef.current = Math.min(backoffRef.current * 1.8, 30000);
 
@@ -146,8 +411,6 @@ export default function Scanner() {
 
     const connect = () => {
       if (!aliveRef.current) return;
-
-      // Avoid multiple sockets
       cleanupWs();
 
       setWsStatus("connecting");
@@ -155,7 +418,7 @@ export default function Scanner() {
       let ws: WebSocket;
       try {
         ws = new WebSocket(wsUrl);
-      } catch (e) {
+      } catch {
         setWsStatus("error");
         scheduleReconnect();
         return;
@@ -165,7 +428,7 @@ export default function Scanner() {
 
       ws.onopen = () => {
         if (!aliveRef.current) return;
-        backoffRef.current = 1000; // reset after success
+        backoffRef.current = 1000;
         setWsStatus("open");
       };
 
@@ -180,25 +443,19 @@ export default function Scanner() {
         }
         if (!msg || typeof msg !== "object") return;
 
-        // hello
-        if ((msg as any).type === "hello") {
-          return;
-        }
+        if ((msg as any).type === "hello") return;
 
-        // trigger payloads
         if ((msg as any).type === "trigger") {
           const t = msg as WsTrigger;
           if (typeof t.id === "number") {
             setTriggers((prev) => prependDedupeLimit(prev, t, 25));
           }
-          return;
         }
       };
 
       ws.onerror = () => {
         if (!aliveRef.current) return;
         setWsStatus("error");
-        // errors usually followed by close; but just in case:
       };
 
       ws.onclose = () => {
@@ -208,11 +465,8 @@ export default function Scanner() {
       };
     };
 
-    // Boot: config/universe/prefs + initial REST triggers once
     refreshAll();
     refreshTriggers();
-
-    // Start WS
     connect();
 
     return () => {
@@ -224,15 +478,12 @@ export default function Scanner() {
 
   return (
     <div className="space-y-6">
-      {/* Trigger feed */}
       <Card>
         <CardContent className="space-y-3">
           <div className="flex flex-row items-center justify-between">
             <div className="text-lg font-semibold flex items-center gap-3">
               <span>Triggered tickers</span>
-              <span className="text-xs opacity-70">
-                WS: {wsStatus}
-              </span>
+              <span className="text-xs opacity-70">WS: {wsStatus}</span>
             </div>
 
             <div className="flex items-center gap-3 text-sm">
@@ -252,73 +503,47 @@ export default function Scanner() {
           ) : (
             <div className="space-y-2">
               {triggers.map((e) => (
-                <div
-                  key={e.id}
-                  className="flex flex-wrap items-center justify-between gap-2 border rounded-md p-3"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="font-semibold">{e.symbol}</div>
-                    <div className="text-xs opacity-70">
-                      {new Date(e.triggered_at).toLocaleString()}
-                    </div>
-                    <div className="text-xs opacity-70">{(e.reason_tags || []).join(", ")}</div>
-                  </div>
-                  <div className="text-xs opacity-70 flex gap-3">
-                    {e.rvol_1m != null && <span>rVol1m: {Number(e.rvol_1m).toFixed(2)}</span>}
-                    {e.vol_1m != null && <span>Vol1m: {Math.round(Number(e.vol_1m))}</span>}
-                    {e.pct_change_1m != null && (
-                      <span>%1m: {Number(e.pct_change_1m).toFixed(2)}%</span>
-                    )}
-                    {e.score != null && <span>Score: {Number(e.score).toFixed(0)}</span>}
-                    {e.candle_color && <span>Candle: {e.candle_color}</span>}
-                    {e.candle_pct != null && <span>Cndl%: {Number(e.candle_pct).toFixed(2)}%</span>}
-                    {e.hod_distance_pct != null && <span>to HOD: {Number(e.hod_distance_pct).toFixed(2)}%</span>}
-                    {e.trigger_age_seconds != null && <span>Age: {Math.round(Number(e.trigger_age_seconds) / 60)}m</span>}
-                  </div>
-                </div>
+                <TriggerRow key={e.id} e={e} />
               ))}
             </div>
           )}
 
           <div className="pt-3 flex gap-2">
-              {canEdit && (
-                <Button
-                  variant="outline"
-                  onClick={async () => {
-                    await emitScannerTestEvent("TEST");
-                  }}
-                >
-                  Emit test event
-                </Button>
-              )}
+            {canEdit && (
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  await emitScannerTestEvent("TEST");
+                }}
+              >
+                Emit test event
+              </Button>
+            )}
 
-              <Button
-                variant="outline"
-                onClick={async () => {
-                  await refreshTriggers();
-                }}
-              >
-                Refresh (REST)
-              </Button>
-            
-              <Button
-                variant="outline"
-                onClick={async () => {
-                  await clearScannerTriggers();
-                  setTriggers([]);          // instant UX
-                  // optional safety:
-                  // await refreshTriggers(); // should return empty after clear
-                }}
-              >
-                Clear
-              </Button>
-            </div>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                await refreshTriggers();
+              }}
+            >
+              Refresh (REST)
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={async () => {
+                await clearScannerTriggers();
+                setTriggers([]);
+              }}
+            >
+              Clear
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
       {/* Universe + Config */}
       <div className="grid md:grid-cols-2 gap-6">
-        {/* Universe */}
         <Card>
           <CardContent className="space-y-3">
             <div className="flex flex-row items-center justify-between">
@@ -366,12 +591,13 @@ export default function Scanner() {
                   )}
                 </div>
               ))}
-              {universe.length === 0 && <div className="text-sm opacity-70">No universe tickers yet.</div>}
+              {universe.length === 0 && (
+                <div className="text-sm opacity-70">No universe tickers yet.</div>
+              )}
             </div>
           </CardContent>
         </Card>
 
-        {/* Config */}
         <Card>
           <CardContent className="space-y-3">
             <div className="flex flex-row items-center justify-between">
@@ -399,7 +625,9 @@ export default function Scanner() {
                     label="Min vol 1m"
                     value={cfg.min_vol_1m}
                     disabled={!canEdit}
-                    onSave={async (v) => setCfg(await updateScannerConfig({ min_vol_1m: v }))}
+                    onSave={async (v) =>
+                      setCfg(await updateScannerConfig({ min_vol_1m: v }))
+                    }
                   />
                   <Field
                     label="Lookback (min)"
@@ -414,34 +642,44 @@ export default function Scanner() {
                     value={cfg.rvol_1m_threshold}
                     disabled={!canEdit}
                     float
-                    onSave={async (v) => setCfg(await updateScannerConfig({ rvol_1m_threshold: v }))}
+                    onSave={async (v) =>
+                      setCfg(await updateScannerConfig({ rvol_1m_threshold: v }))
+                    }
                   />
                   <Field
                     label="rVol 5m thr"
                     value={cfg.rvol_5m_threshold}
                     disabled={!canEdit}
                     float
-                    onSave={async (v) => setCfg(await updateScannerConfig({ rvol_5m_threshold: v }))}
+                    onSave={async (v) =>
+                      setCfg(await updateScannerConfig({ rvol_5m_threshold: v }))
+                    }
                   />
                   <Field
                     label="% 1m min"
                     value={cfg.min_pct_change_1m}
                     disabled={!canEdit}
                     float
-                    onSave={async (v) => setCfg(await updateScannerConfig({ min_pct_change_1m: v }))}
+                    onSave={async (v) =>
+                      setCfg(await updateScannerConfig({ min_pct_change_1m: v }))
+                    }
                   />
                   <Field
                     label="% 5m min"
                     value={cfg.min_pct_change_5m}
                     disabled={!canEdit}
                     float
-                    onSave={async (v) => setCfg(await updateScannerConfig({ min_pct_change_5m: v }))}
+                    onSave={async (v) =>
+                      setCfg(await updateScannerConfig({ min_pct_change_5m: v }))
+                    }
                   />
                   <Field
                     label="Cooldown (min)"
                     value={cfg.cooldown_minutes}
                     disabled={!canEdit}
-                    onSave={async (v) => setCfg(await updateScannerConfig({ cooldown_minutes: v }))}
+                    onSave={async (v) =>
+                      setCfg(await updateScannerConfig({ cooldown_minutes: v }))
+                    }
                   />
                 </div>
 
@@ -479,7 +717,9 @@ export default function Scanner() {
                 </div>
 
                 {!canEdit && (
-                  <div className="text-xs opacity-70">Config is visible but only editable by admin.</div>
+                  <div className="text-xs opacity-70">
+                    Config is visible but only editable by admin.
+                  </div>
                 )}
               </>
             )}
@@ -505,7 +745,11 @@ function Field(props: {
     <div className="space-y-1">
       <div className="text-xs opacity-70">{props.label}</div>
       <div className="flex gap-2">
-        <Input value={local} disabled={props.disabled} onChange={(e) => setLocal(e.target.value)} />
+        <Input
+          value={local}
+          disabled={props.disabled}
+          onChange={(e) => setLocal(e.target.value)}
+        />
         <Button
           variant="outline"
           disabled={props.disabled}

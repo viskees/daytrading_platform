@@ -62,8 +62,9 @@ def compute_metrics(symbol: str, bars: List[Bar1m], lookback_minutes: int) -> Op
     pct_change_1m = (last.c - prev.c) / max(prev.c, 1e-9) * 100.0
     pct_change_5m = (last.c - prev5.c) / max(prev5.c, 1e-9) * 100.0
 
-    hod = float(max(b.h for b in bars))
-    broke_hod = bool(last.h >= hod and last.h > max(b.h for b in bars[:-1]))
+    prior_hod = float(max(b.h for b in bars[:-1]))
+    hod = float(max(prior_hod, float(last.h)))
+    broke_hod = bool(float(last.h) > prior_hod)
 
     # Basic score (tune later): weight volume ignition + movement + hod break
     score = 0.0
@@ -138,11 +139,47 @@ def should_trigger(m: Metrics, cfg: ScannerConfig) -> Tuple[bool, List[str]]:
 
 
 def in_cooldown(symbol: str, now: datetime, cooldown_minutes: int) -> bool:
-    """
-    Simple DB-based cooldown: if any event exists in last cooldown window, we are in cooldown.
-    """
     cutoff = now - timedelta(minutes=cooldown_minutes)
     return ScannerTriggerEvent.objects.filter(symbol=symbol, triggered_at__gte=cutoff).exists()
+
+
+def allow_trigger_with_cooldown(m: Metrics, cfg: ScannerConfig, now: datetime) -> bool:
+    """
+    Cooldown gate with optional 'realert on new HOD' override.
+
+    - If not in cooldown => True
+    - If in cooldown:
+        - if realert_on_new_hod is False => False
+        - if realert_on_new_hod is True => True only when current HOD exceeds last trigger's HOD
+    """
+    cutoff = now - timedelta(minutes=cfg.cooldown_minutes)
+
+    # Find most recent trigger for this symbol (optionally within cooldown window)
+    last_ev: Optional[ScannerTriggerEvent] = (
+        ScannerTriggerEvent.objects
+        .filter(symbol=m.symbol)
+        .order_by("-triggered_at")
+        .only("id", "triggered_at", "hod")
+        .first()
+    )
+
+    if not last_ev:
+        return True
+
+    # Not in cooldown window -> allow
+    if last_ev.triggered_at < cutoff:
+        return True
+
+    # In cooldown window -> only allow if config says so AND we made a new HOD vs last trigger snapshot
+    if not cfg.realert_on_new_hod:
+        return False
+
+    try:
+        last_hod = float(last_ev.hod or 0.0)
+    except Exception:
+        last_hod = 0.0
+
+    return float(m.hod or 0.0) > last_hod
 
 
 def _dedupe_tags(tags: List[str]) -> List[str]:
@@ -197,7 +234,8 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
         m, _extra = res
 
         # cooldown check
-        if in_cooldown(sym, now, cfg.cooldown_minutes):
+        # cooldown check (+ optional realert on new hod)
+        if not allow_trigger_with_cooldown(m, cfg, now):
             continue
 
         ok, decision_tags = should_trigger(m, cfg)
