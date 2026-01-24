@@ -1,8 +1,9 @@
 // frontend/src/routes/app/Scanner.tsx
 // Adds: click-to-expand per trigger row, showing 5m values + hides raw "Why" behind expand.
 // Also auto-expands rows that triggered primarily on 5m conditions.
+// Adds: live "Age" updating WITHOUT refreshing and WITHOUT re-rendering whole rows (single shared ticker).
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -120,11 +121,6 @@ function fmtPx(v: number | null) {
   return v.toFixed(2);
 }
 
-function ageMin(ageSeconds: number | null) {
-  if (ageSeconds == null) return "—";
-  return `${Math.max(0, Math.round(ageSeconds / 60))}m`;
-}
-
 function hasTag(e: TriggerEvent, tag: string) {
   return Array.isArray(e?.reason_tags) && e.reason_tags.includes(tag);
 }
@@ -187,20 +183,97 @@ function FlameRow({ rvol1m }: { rvol1m: number | null }) {
   );
 }
 
+/* =========================
+   Live "now" ticker (single shared timer)
+   - avoids re-rendering the full page/list
+   - only components subscribing to the ticker update
+   ========================= */
+
+const NOW_TICK_MS = 5000;
+
+const nowStore = (() => {
+  let now = Date.now();
+  let timer: number | null = null;
+  const listeners = new Set<() => void>();
+
+  const start = () => {
+    if (timer != null) return;
+    timer = window.setInterval(() => {
+      now = Date.now();
+      listeners.forEach((fn) => fn());
+    }, NOW_TICK_MS);
+  };
+
+  const stop = () => {
+    if (timer == null) return;
+    window.clearInterval(timer);
+    timer = null;
+  };
+
+  return {
+    getSnapshot: () => now,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      if (listeners.size === 1) start();
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) stop();
+      };
+    },
+  };
+})();
+
+function useNowMs(): number {
+  // Server-side fallback not relevant here; but keep stable anyway
+  return useSyncExternalStore(nowStore.subscribe, nowStore.getSnapshot, nowStore.getSnapshot);
+}
+
+function formatAgeFromSeconds(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "—";
+  const s = Math.floor(totalSeconds);
+
+  if (s < 60) return `${s}s`;
+
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${h}h ${mm}m`;
+}
+
+const AgeText = React.memo(function AgeText(props: {
+  triggeredAt: string;
+  fallbackAgeSeconds?: number | null;
+}) {
+  const nowMs = useNowMs();
+
+  // Primary source of truth: triggered_at timestamp (frontend computes live)
+  const tsMs = Date.parse(props.triggeredAt);
+  let ageSeconds: number | null = null;
+
+  if (Number.isFinite(tsMs)) {
+    ageSeconds = Math.max(0, (nowMs - tsMs) / 1000);
+  } else if (props.fallbackAgeSeconds != null) {
+    ageSeconds = Math.max(0, Number(props.fallbackAgeSeconds));
+  }
+
+  // tabular + fixed-ish width so it doesn't "dance" while updating
+  return (
+    <span className="font-semibold tabular-nums inline-block min-w-[4.5rem] text-right">
+      {ageSeconds == null ? "—" : formatAgeFromSeconds(ageSeconds)}
+    </span>
+  );
+});
+
 /**
  * If the trigger was primarily due to 5m conditions,
  * we want to auto-expand it so the trader immediately sees %5m + rVol5m.
  */
 function shouldAutoExpand(e: TriggerEvent): boolean {
   const tags = e.reason_tags || [];
-  const has5m =
-    tags.includes("PCT_5M_THR") ||
-    tags.includes("RVOL_5M_THR") ||
-    tags.includes("RVOL_5M");
-  const has1m =
-    tags.includes("PCT_1M_THR") ||
-    tags.includes("RVOL_1M_THR") ||
-    tags.includes("RVOL_1M");
+  const has5m = tags.includes("PCT_5M_THR") || tags.includes("RVOL_5M_THR") || tags.includes("RVOL_5M");
+  const has1m = tags.includes("PCT_1M_THR") || tags.includes("RVOL_1M_THR") || tags.includes("RVOL_1M");
 
   // auto-expand if 5m present and 1m not strongly present
   return !!has5m && !has1m;
@@ -237,13 +310,11 @@ function TriggerRow({ e }: { e: TriggerEvent }) {
   const cndlPct = n(e.candle_pct);
   const toHod = n(e.hod_distance_pct);
   const score = n(e.score);
-  const age = n(e.trigger_age_seconds);
   const px = n(e.last_price);
 
   const hod = hodStatus(e);
   const why = (e.reason_tags || []).filter(Boolean);
 
-  // small hint: show an expand affordance
   const expandText = expanded ? "Less" : "More";
 
   return (
@@ -267,7 +338,7 @@ function TriggerRow({ e }: { e: TriggerEvent }) {
           )}
 
           <span className="text-sm opacity-80">
-            Age: <span className="font-semibold">{ageMin(age)}</span>
+            Age: <AgeText triggeredAt={e.triggered_at} fallbackAgeSeconds={e.trigger_age_seconds} />
           </span>
         </div>
 
@@ -317,7 +388,8 @@ function TriggerRow({ e }: { e: TriggerEvent }) {
             <Badge variant="outline">5m context</Badge>
 
             <span className="opacity-80">
-              rVol 5m: <span className="font-semibold">{r5 != null ? `${r5.toFixed(2)}x` : "—"}</span>
+              rVol 5m:{" "}
+              <span className="font-semibold">{r5 != null ? `${r5.toFixed(2)}x` : "—"}</span>
             </span>
 
             <span className="opacity-80">
@@ -329,11 +401,7 @@ function TriggerRow({ e }: { e: TriggerEvent }) {
             </span>
           </div>
 
-          {why.length > 0 && (
-            <div className="text-xs opacity-60">
-              Why: {why.join(", ")}
-            </div>
-          )}
+          {why.length > 0 && <div className="text-xs opacity-60">Why: {why.join(", ")}</div>}
         </div>
       )}
     </div>
@@ -357,11 +425,7 @@ export default function Scanner() {
   const wsUrl = useMemo(() => scannerTriggersWsUrl(), []);
 
   async function refreshAll() {
-    const [c, u, p] = await Promise.all([
-      fetchScannerConfig(),
-      listScannerUniverse(),
-      fetchScannerPreferences(),
-    ]);
+    const [c, u, p] = await Promise.all([fetchScannerConfig(), listScannerUniverse(), fetchScannerPreferences()]);
     setCfg(c);
     setUniverse(u);
     setPrefs(p);
@@ -591,9 +655,7 @@ export default function Scanner() {
                   )}
                 </div>
               ))}
-              {universe.length === 0 && (
-                <div className="text-sm opacity-70">No universe tickers yet.</div>
-              )}
+              {universe.length === 0 && <div className="text-sm opacity-70">No universe tickers yet.</div>}
             </div>
           </CardContent>
         </Card>
@@ -625,61 +687,47 @@ export default function Scanner() {
                     label="Min vol 1m"
                     value={cfg.min_vol_1m}
                     disabled={!canEdit}
-                    onSave={async (v) =>
-                      setCfg(await updateScannerConfig({ min_vol_1m: v }))
-                    }
+                    onSave={async (v) => setCfg(await updateScannerConfig({ min_vol_1m: v }))}
                   />
                   <Field
                     label="Lookback (min)"
                     value={cfg.rvol_lookback_minutes}
                     disabled={!canEdit}
-                    onSave={async (v) =>
-                      setCfg(await updateScannerConfig({ rvol_lookback_minutes: v }))
-                    }
+                    onSave={async (v) => setCfg(await updateScannerConfig({ rvol_lookback_minutes: v }))}
                   />
                   <Field
                     label="rVol 1m thr"
                     value={cfg.rvol_1m_threshold}
                     disabled={!canEdit}
                     float
-                    onSave={async (v) =>
-                      setCfg(await updateScannerConfig({ rvol_1m_threshold: v }))
-                    }
+                    onSave={async (v) => setCfg(await updateScannerConfig({ rvol_1m_threshold: v }))}
                   />
                   <Field
                     label="rVol 5m thr"
                     value={cfg.rvol_5m_threshold}
                     disabled={!canEdit}
                     float
-                    onSave={async (v) =>
-                      setCfg(await updateScannerConfig({ rvol_5m_threshold: v }))
-                    }
+                    onSave={async (v) => setCfg(await updateScannerConfig({ rvol_5m_threshold: v }))}
                   />
                   <Field
                     label="% 1m min"
                     value={cfg.min_pct_change_1m}
                     disabled={!canEdit}
                     float
-                    onSave={async (v) =>
-                      setCfg(await updateScannerConfig({ min_pct_change_1m: v }))
-                    }
+                    onSave={async (v) => setCfg(await updateScannerConfig({ min_pct_change_1m: v }))}
                   />
                   <Field
                     label="% 5m min"
                     value={cfg.min_pct_change_5m}
                     disabled={!canEdit}
                     float
-                    onSave={async (v) =>
-                      setCfg(await updateScannerConfig({ min_pct_change_5m: v }))
-                    }
+                    onSave={async (v) => setCfg(await updateScannerConfig({ min_pct_change_5m: v }))}
                   />
                   <Field
                     label="Cooldown (min)"
                     value={cfg.cooldown_minutes}
                     disabled={!canEdit}
-                    onSave={async (v) =>
-                      setCfg(await updateScannerConfig({ cooldown_minutes: v }))
-                    }
+                    onSave={async (v) => setCfg(await updateScannerConfig({ cooldown_minutes: v }))}
                   />
                 </div>
 
@@ -688,9 +736,7 @@ export default function Scanner() {
                   <Switch
                     checked={cfg.require_green_candle}
                     disabled={!canEdit}
-                    onCheckedChange={async (v) =>
-                      setCfg(await updateScannerConfig({ require_green_candle: v }))
-                    }
+                    onCheckedChange={async (v) => setCfg(await updateScannerConfig({ require_green_candle: v }))}
                   />
                 </div>
 
@@ -699,9 +745,7 @@ export default function Scanner() {
                   <Switch
                     checked={cfg.require_hod_break}
                     disabled={!canEdit}
-                    onCheckedChange={async (v) =>
-                      setCfg(await updateScannerConfig({ require_hod_break: v }))
-                    }
+                    onCheckedChange={async (v) => setCfg(await updateScannerConfig({ require_hod_break: v }))}
                   />
                 </div>
 
@@ -710,17 +754,11 @@ export default function Scanner() {
                   <Switch
                     checked={cfg.realert_on_new_hod}
                     disabled={!canEdit}
-                    onCheckedChange={async (v) =>
-                      setCfg(await updateScannerConfig({ realert_on_new_hod: v }))
-                    }
+                    onCheckedChange={async (v) => setCfg(await updateScannerConfig({ realert_on_new_hod: v }))}
                   />
                 </div>
 
-                {!canEdit && (
-                  <div className="text-xs opacity-70">
-                    Config is visible but only editable by admin.
-                  </div>
-                )}
+                {!canEdit && <div className="text-xs opacity-70">Config is visible but only editable by admin.</div>}
               </>
             )}
           </CardContent>
@@ -745,11 +783,7 @@ function Field(props: {
     <div className="space-y-1">
       <div className="text-xs opacity-70">{props.label}</div>
       <div className="flex gap-2">
-        <Input
-          value={local}
-          disabled={props.disabled}
-          onChange={(e) => setLocal(e.target.value)}
-        />
+        <Input value={local} disabled={props.disabled} onChange={(e) => setLocal(e.target.value)} />
         <Button
           variant="outline"
           disabled={props.disabled}
