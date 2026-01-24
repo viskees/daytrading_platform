@@ -117,6 +117,75 @@ services:
     networks:
       - internal      # same internal network as django/postgres
 
+  celery-worker:
+    user: "${UID:-1000}:${GID:-1000}"
+    build:
+      context: ./django
+    env_file: .env.dev
+    entrypoint: []
+    command: ["bash", "/app/entrypoint-celery.sh", "worker"]
+    volumes:
+      - ./django/app:/app/app
+      - ./.env.dev:/app/.env.dev:ro
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  celery-beat:
+    user: "${UID:-1000}:${GID:-1000}"
+    build:
+      context: ./django
+    env_file: .env.dev
+    entrypoint: []
+    command: ["bash", "/app/entrypoint-celery.sh", "beat"]
+    volumes:
+      - ./django/app:/app/app
+      - ./.env.dev:/app/.env.dev:ro
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    env_file: .env.dev
+    networks: [internal]
+    restart: unless-stopped
+    environment:
+      # Map your naming -> what the image expects
+      - TRADING_MODE=${IBKR_TRADING_MODE:-paper}
+    # Optional: for first-time debugging (VNC). Comment out if you don't want it.
+    # ports:
+    #   - "5900:5900"
+    #   - "4002:4002"
+
+  scanner-ingestor:
+    user: "${UID:-1000}:${GID:-1000}"
+    build:
+      context: ./django
+    env_file: .env.dev
+    entrypoint: []
+    command: ["python", "/app/app/manage.py", "scanner_ingest_ws", "--universe-poll-seconds", "10", "--keep", "180", "--heartbeat-seconds", "30"]
+    volumes:
+      - ./django/app:/app/app
+      - ./.env.dev:/app/.env.dev:ro
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      ib-gateway:
+        condition: service_started
+    restart: unless-stopped
+
 networks:
   web:
   internal:

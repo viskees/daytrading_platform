@@ -56,16 +56,20 @@ INSTALLED_APPS = [
     'django_otp.plugins.otp_static',
     'django_otp.plugins.otp_totp',
     'two_factor',
+    "django_celery_beat",
+    "channels",
 
     # Local
     'journal',
     'accounts',
     'feedback',
     'notifications.apps.NotificationsConfig',
+    'scanner.apps.ScannerAppConfig',
 
     # DRF
     'rest_framework_simplejwt.token_blacklist',
 ]
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -169,10 +173,15 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.UserRateThrottle",
         "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.ScopedRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        "user": "1000/day",
-        "anon": "200/day",
+        "anon": "60/min",
+        "user": "600/min",
+        # scoped (per-view)
+        "scanner_triggers": "240/min",   # 1 request / 0.25s (plenty even with 5s polling)
+        "scanner_read": "120/min",
+        "scanner_write": "30/min",
         # password reset request
         "password_reset_ip": "5/hour",
         "password_reset_email": "3/hour",
@@ -180,7 +189,7 @@ REST_FRAMEWORK = {
         "password_reset_confirm_ip": "20/hour",
         "password_reset_confirm_uid": "10/hour",
 
-        # login hardening (optional but recommended)
+        # login hardening
         "login_ip": "20/hour",
         "login_email": "10/hour",
     },
@@ -195,23 +204,21 @@ REST_FRAMEWORK = {
 # Cache (important for throttling to be shared across containers)
 # --------------------------------------------------------------------------------------
 # Use Redis in production if REDIS_URL is set. Safe fallback for dev.
-REDIS_URL = env("REDIS_URL", default="")
+REDIS_URL = env("REDIS_URL", default="redis://redis:6379/1")
 
-if REDIS_URL:
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.redis.RedisCache",
-            "LOCATION": REDIS_URL,
-        }
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [REDIS_URL]},
     }
-else:
-    # fallback (dev / single-container)
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-            "LOCATION": "local-dev",
-        }
+}
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": REDIS_URL,
     }
+}
 
 
 # --------------------------------------------------------------------------------------
@@ -264,3 +271,14 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 PASSWORD_RESET_LOGOUT_ALL = env.bool("PASSWORD_RESET_LOGOUT_ALL", default=True)
+
+SCANNER_ADMIN_EMAIL = env("SCANNER_ADMIN_EMAIL", default="")
+# --------------------------------------------------------------------------------------
+
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
+
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "Europe/Amsterdam"

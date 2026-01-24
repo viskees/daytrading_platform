@@ -59,6 +59,7 @@ urlpatterns = [
     path("api/auth/", include("accounts.urls")),   # register / verify-email / resend
     path("api/journal/", include("journal.urls")),
     path("api/feedback/", include("feedback.urls")),
+    path("api/scanner/", include("scanner.urls")),
 
     # SPA fallback
     # Do not swallow admin, api, static/media, or pgadmin with the SPA fallback

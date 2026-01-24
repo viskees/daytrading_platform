@@ -32,6 +32,7 @@ export default function AppLayout() {
               { to: "/app", label: "Dashboard", end: true },
               { to: "/app/risk", label: "Risk" },
               { to: "/app/journal", label: "Journal" },
+              { to: "/app/scanner", label: "Scanner" },
               { to: "/app/feedback", label: "Feedback" },
               { to: "/app/account", label: "Account" },
             ].map((tab) => (

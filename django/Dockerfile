@@ -19,9 +19,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # (In dev, this will be overridden by the bind mount ./django/app:/app/app)
 COPY app /app/app
 
-# Entrypoint
+# Entrypoints
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+COPY entrypoint-celery.sh /app/entrypoint-celery.sh
+RUN chmod +x /app/entrypoint-celery.sh
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
