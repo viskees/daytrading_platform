@@ -228,21 +228,10 @@ services:
       context: ./django
     env_file: .env.prod
     entrypoint: []
-    command:
-      - bash
-      - -lc
-      - |
-        echo "Waiting for IBKR gateway on ib-gateway:4004..."
-        for i in {1..180}; do
-          nc -z ib-gateway 4004 && break
-          sleep 5
-        done
-        nc -z ib-gateway 4004 || (echo "IBKR gateway not reachable" && exit 1)
-        exec python /app/app/manage.py scanner_ingest_ws --universe-poll-seconds 10 --keep 180 --heartbeat-seconds 30
+    command: ["python", "/app/app/manage.py", "scanner_ingest_ws", "--universe-poll-seconds", "10", "--keep", "180", "--heartbeat-seconds", "30"]
     volumes:
-      - ./.env.prod:/app/.env.prod:ro
-      - ./django/app/staticfiles:/app/app/staticfiles
-      - ./django/app/media:/app/app/media
+    - ./django/app:/app/app
+    - ./.env.prod:/app/.env.prod:ro
     networks: [internal]
     depends_on:
       postgres:
