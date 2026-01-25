@@ -215,10 +215,12 @@ services:
       - BYPASS_WARNING=yes
       - AUTO_RESTART=yes
     healthcheck:
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 4004 || exit 1"]
+      # No nc/ss needed; bash built-in TCP probe
+      test: ["CMD-SHELL", "bash -lc ': >/dev/tcp/127.0.0.1/4004'"]
       interval: 5s
       timeout: 2s
       retries: 180
+      start_period: 30s
 
   scanner-ingestor:
     user: "${UID:-1000}:${GID:-1000}"
