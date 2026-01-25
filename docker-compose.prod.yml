@@ -213,6 +213,13 @@ services:
       - READ_ONLY_API=${READ_ONLY_API:-yes}
       # Strongly recommended so API can connect without manual clicking:
       - TWS_ACCEPT_INCOMING=accept
+      - BYPASS_WARNING=yes
+      - AUTO_RESTART=yes
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 4002 || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 60
 
   scanner-ingestor:
     user: "${UID:-1000}:${GID:-1000}"
@@ -232,7 +239,7 @@ services:
       redis:
         condition: service_started
       ib-gateway:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
 networks:
