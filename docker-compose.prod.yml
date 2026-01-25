@@ -210,6 +210,9 @@ services:
     restart: unless-stopped
     environment:
       - TRADING_MODE=${IBKR_TRADING_MODE:-paper}
+      - READ_ONLY_API=${READ_ONLY_API:-yes}
+      # Strongly recommended so API can connect without manual clicking:
+      - TWS_ACCEPT_INCOMING=accept
 
   scanner-ingestor:
     user: "${UID:-1000}:${GID:-1000}"
