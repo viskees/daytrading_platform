@@ -52,7 +52,6 @@ class ScannerTriggerEventViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixi
     def get_queryset(self):
         qs = super().get_queryset()
 
-        # Per-user "clear feed" filter
         settings_obj, _ = UserScannerSettings.objects.get_or_create(user=self.request.user)
         if settings_obj.cleared_until:
             qs = qs.filter(triggered_at__gt=settings_obj.cleared_until)
@@ -79,6 +78,12 @@ class ScannerTriggerEventViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixi
 
 
 class UserScannerSettingsViewSet(mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
+    """
+    Multi-user note:
+    - This viewset is *per-user*, not per-row.
+    - Legacy endpoints like /preferences/1/ are tolerated but ignored (treated as "me").
+    - Preferred endpoint: /preferences/me/ (GET + PATCH).
+    """
     permission_classes = [IsAuthenticated]
     serializer_class = UserScannerSettingsSerializer
 
@@ -88,6 +93,23 @@ class UserScannerSettingsViewSet(mixins.RetrieveModelMixin, mixins.UpdateModelMi
     def get_object(self):
         obj, _ = UserScannerSettings.objects.get_or_create(user=self.request.user)
         return obj
+
+    @action(detail=False, methods=["get", "patch"], url_path="me")
+    def me(self, request):
+        """
+        GET/PATCH current user's scanner preferences.
+        """
+        obj = self.get_object()
+
+        if request.method.lower() == "get":
+            ser = self.get_serializer(obj)
+            return Response(ser.data, status=status.HTTP_200_OK)
+
+        # PATCH
+        ser = self.get_serializer(obj, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data, status=status.HTTP_200_OK)
 
 
 class ScannerAdminViewSet(viewsets.ViewSet):
@@ -122,5 +144,12 @@ class ScannerAdminViewSet(viewsets.ViewSet):
             UserScannerSettings.objects.filter(follow_alerts=True).values_list("user_id", flat=True)
         )
         publish_trigger_event_to_users(follower_ids, payload)
+
+        # Also notify via Pushover (async)
+        try:
+            from scanner.tasks import scanner_notify_pushover_trigger
+            scanner_notify_pushover_trigger.delay(ev.id)
+        except Exception:
+            pass
 
         return Response(payload, status=201)

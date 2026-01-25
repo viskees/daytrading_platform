@@ -273,6 +273,8 @@ AUTH_PASSWORD_VALIDATORS = [
 PASSWORD_RESET_LOGOUT_ALL = env.bool("PASSWORD_RESET_LOGOUT_ALL", default=True)
 
 SCANNER_ADMIN_EMAIL = env("SCANNER_ADMIN_EMAIL", default="")
+# --- Pushover (optional channel for scanner alerts) ---
+PUSHOVER_APP_TOKEN = env("PUSHOVER_APP_TOKEN", default="").strip()
 # --------------------------------------------------------------------------------------
 
 CELERY_BROKER_URL = REDIS_URL

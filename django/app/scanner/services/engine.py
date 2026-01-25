@@ -154,7 +154,6 @@ def allow_trigger_with_cooldown(m: Metrics, cfg: ScannerConfig, now: datetime) -
     """
     cutoff = now - timedelta(minutes=cfg.cooldown_minutes)
 
-    # Find most recent trigger for this symbol (optionally within cooldown window)
     last_ev: Optional[ScannerTriggerEvent] = (
         ScannerTriggerEvent.objects
         .filter(symbol=m.symbol)
@@ -166,11 +165,9 @@ def allow_trigger_with_cooldown(m: Metrics, cfg: ScannerConfig, now: datetime) -
     if not last_ev:
         return True
 
-    # Not in cooldown window -> allow
     if last_ev.triggered_at < cutoff:
         return True
 
-    # In cooldown window -> only allow if config says so AND we made a new HOD vs last trigger snapshot
     if not cfg.realert_on_new_hod:
         return False
 
@@ -204,7 +201,6 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
 
     cfg, _ = ScannerConfig.objects.get_or_create(id=1)
 
-    # Respect the enable toggle
     if not cfg.enabled:
         return 0
 
@@ -213,17 +209,13 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
     if not symbols:
         return 0
 
-    # Fetch enough bars for metrics calculation
     bars_map = fetch_bars(symbols, minutes=cfg.rvol_lookback_minutes)
 
-    # Who should receive realtime alerts?
     follower_ids = list(
         UserScannerSettings.objects.filter(follow_alerts=True).values_list("user_id", flat=True)
     )
 
     created = 0
-
-    
 
     for sym in symbols:
         bars = bars_map.get(sym) or []
@@ -233,8 +225,6 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
 
         m, _extra = res
 
-        # cooldown check
-        # cooldown check (+ optional realert on new hod)
         if not allow_trigger_with_cooldown(m, cfg, now):
             continue
 
@@ -242,7 +232,6 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
         if not ok:
             continue
 
-        # Persist trigger event
         ev = ScannerTriggerEvent.objects.create(
             symbol=sym,
             triggered_at=now,
@@ -288,7 +277,14 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
             payload = ScannerTriggerEventSerializer(ev).data
             publish_trigger_event_to_users(follower_ids, payload)
         except Exception:
-            # Engine should never crash because realtime failed
+            pass
+
+        # Pushover notify (async) - import inside to avoid circular imports
+        try:
+            from scanner.tasks import scanner_notify_pushover_trigger
+            scanner_notify_pushover_trigger.delay(ev.id)
+        except Exception:
+            # Engine should never crash because notification enqueue failed
             pass
 
     return created

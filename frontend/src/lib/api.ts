@@ -1117,14 +1117,37 @@ export async function listScannerTriggers(limit = 25) {
   return j.results ?? j;
 }
 
+/**
+ * Multi-user safe preferences:
+ * - preferred: /api/scanner/preferences/me/
+ * - fallback:  /api/scanner/preferences/1/  (legacy until backend is updated)
+ */
+async function scannerPrefsFetch(path: string, init?: RequestInit) {
+  const res = await authedFetch(path, init);
+  return res;
+}
+
 export async function fetchScannerPreferences() {
-  const res = await authedFetch("/api/scanner/preferences/1/");
+  // try "me" first
+  let res = await scannerPrefsFetch("/api/scanner/preferences/me/");
+  if (res.ok) return await res.json();
+
+  // fallback legacy
+  res = await scannerPrefsFetch("/api/scanner/preferences/1/");
   if (!res.ok) throw new Error("Failed to fetch scanner preferences");
   return await res.json();
 }
 
 export async function updateScannerPreferences(patch: Record<string, any>) {
-  const res = await authedFetch("/api/scanner/preferences/1/", {
+  // try "me" first
+  let res = await scannerPrefsFetch("/api/scanner/preferences/me/", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  if (res.ok) return await res.json();
+
+  // fallback legacy
+  res = await scannerPrefsFetch("/api/scanner/preferences/1/", {
     method: "PATCH",
     body: JSON.stringify(patch),
   });

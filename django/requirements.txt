@@ -18,3 +18,4 @@ django-celery-beat==2.6.*
 ib_insync
 channels>=4.0
 channels-redis>=4.2
+requests>=2.31
