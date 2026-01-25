@@ -211,15 +211,14 @@ services:
     environment:
       - TRADING_MODE=${IBKR_TRADING_MODE:-paper}
       - READ_ONLY_API=${READ_ONLY_API:-yes}
-      # Strongly recommended so API can connect without manual clicking:
       - TWS_ACCEPT_INCOMING=accept
       - BYPASS_WARNING=yes
       - AUTO_RESTART=yes
     healthcheck:
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 4002 || exit 1"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 4004 || exit 1"]
       interval: 5s
       timeout: 2s
-      retries: 60
+      retries: 180
 
   scanner-ingestor:
     user: "${UID:-1000}:${GID:-1000}"
@@ -227,7 +226,17 @@ services:
       context: ./django
     env_file: .env.prod
     entrypoint: []
-    command: ["python", "/app/app/manage.py", "scanner_ingest_ws", "--universe-poll-seconds", "10", "--keep", "180", "--heartbeat-seconds", "30"]
+    command:
+      - bash
+      - -lc
+      - |
+        echo "Waiting for IBKR gateway on ib-gateway:4004..."
+        for i in {1..180}; do
+          nc -z ib-gateway 4004 && break
+          sleep 5
+        done
+        nc -z ib-gateway 4004 || (echo "IBKR gateway not reachable" && exit 1)
+        exec python /app/app/manage.py scanner_ingest_ws --universe-poll-seconds 10 --keep 180 --heartbeat-seconds 30
     volumes:
       - ./.env.prod:/app/.env.prod:ro
       - ./django/app/staticfiles:/app/app/staticfiles
