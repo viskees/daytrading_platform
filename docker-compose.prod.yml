@@ -208,10 +208,8 @@ services:
     env_file: .env.prod
     networks: [internal]
     restart: unless-stopped
-    # Strongly recommend NOT exposing ports in prod unless you really need them.
-    # ports:
-    #   - "5900:5900"
-    #   - "4002:4002"
+    environment:
+      - TRADING_MODE=${IBKR_TRADING_MODE:-paper}
 
   scanner-ingestor:
     user: "${UID:-1000}:${GID:-1000}"
