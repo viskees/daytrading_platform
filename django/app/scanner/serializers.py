@@ -1,6 +1,12 @@
 from django.utils import timezone
 from rest_framework import serializers
-from .models import ScannerConfig, ScannerUniverseTicker, ScannerTriggerEvent, UserScannerSettings
+
+from .models import (
+    ScannerConfig,
+    ScannerUniverseTicker,
+    ScannerTriggerEvent,
+    UserScannerSettings,
+)
 
 
 class ScannerConfigSerializer(serializers.ModelSerializer):
@@ -56,16 +62,23 @@ class ScannerTriggerEventSerializer(serializers.ModelSerializer):
             "symbol",
             "triggered_at",
             "reason_tags",
-            "o", "h", "l", "c", "v",
+            "o",
+            "h",
+            "l",
+            "c",
+            "v",
             "last_price",
-            "vol_1m", "vol_5m",
+            "vol_1m",
+            "vol_5m",
             "avg_vol_1m_lookback",
-            "rvol_1m", "rvol_5m",
-            "pct_change_1m", "pct_change_5m",
-            "hod", "broke_hod",
+            "rvol_1m",
+            "rvol_5m",
+            "pct_change_1m",
+            "pct_change_5m",
+            "hod",
+            "broke_hod",
             "score",
             "config_snapshot",
-
             # computed
             "candle_color",
             "candle_pct",
@@ -138,7 +151,101 @@ class ScannerTriggerEventSerializer(serializers.ModelSerializer):
 
 
 class UserScannerSettingsSerializer(serializers.ModelSerializer):
+    """
+    Per-user scanner settings / notification routing.
+    IMPORTANT:
+    - Pushover *App token* stays server-side only (env/settings).
+    - Users only provide their Pushover *User Key* (and optional device/sound).
+    """
+
     class Meta:
         model = UserScannerSettings
-        fields = ["follow_alerts", "cleared_until", "updated_at"]
+        fields = [
+            "follow_alerts",
+            "cleared_until",
+
+            # Pushover user-configurable fields (per user)
+            "pushover_enabled",
+            "pushover_user_key",
+            "pushover_device",
+            "pushover_sound",
+            "pushover_priority",
+
+            # Trader-grade notification gating (per user)
+            "notify_min_score",
+            "notify_only_hod_break",
+
+            "updated_at",
+        ]
         read_only_fields = ["updated_at"]
+
+    def validate_pushover_user_key(self, value: str):
+        """
+        Pushover User Key is typically a 30-char alphanumeric string.
+        We'll do light validation (avoid blocking legit keys if format changes).
+        """
+        v = (value or "").strip()
+        if v == "":
+            return v
+
+        if len(v) < 20 or len(v) > 40:
+            raise serializers.ValidationError("Pushover User Key looks invalid (unexpected length).")
+
+        # Be conservative: allow only [A-Za-z0-9]
+        if not v.isalnum():
+            raise serializers.ValidationError("Pushover User Key must be alphanumeric.")
+        return v
+
+    def validate_pushover_device(self, value: str):
+        v = (value or "").strip()
+        if v and len(v) > 64:
+            raise serializers.ValidationError("Device name too long (max 64 chars).")
+        return v
+
+    def validate_pushover_sound(self, value: str):
+        v = (value or "").strip()
+        if v and len(v) > 32:
+            raise serializers.ValidationError("Sound name too long (max 32 chars).")
+        return v
+
+    def validate_pushover_priority(self, value):
+        """
+        Pushover priority range: -2..2 (official).
+        """
+        if value is None:
+            return value
+        try:
+            iv = int(value)
+        except Exception:
+            raise serializers.ValidationError("Priority must be an integer.")
+        if iv < -2 or iv > 2:
+            raise serializers.ValidationError("Priority must be between -2 and 2.")
+        return iv
+
+    def validate_notify_min_score(self, value):
+        """
+        Optional. If set, score must be within a sane range.
+        (We keep wide range so you can evolve scoring later.)
+        """
+        if value is None or value == "":
+            return None
+        try:
+            fv = float(value)
+        except Exception:
+            raise serializers.ValidationError("notify_min_score must be a number.")
+        if fv < 0 or fv > 1000:
+            raise serializers.ValidationError("notify_min_score out of range.")
+        return fv
+
+    def validate(self, attrs):
+        """
+        If pushover is enabled, require a user key.
+        """
+        enabled = attrs.get("pushover_enabled", getattr(self.instance, "pushover_enabled", False))
+        user_key = attrs.get("pushover_user_key", getattr(self.instance, "pushover_user_key", ""))
+
+        if enabled and not (user_key or "").strip():
+            raise serializers.ValidationError(
+                {"pushover_user_key": "Pushover is enabled, but no User Key is set."}
+            )
+        return attrs

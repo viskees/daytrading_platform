@@ -98,20 +98,35 @@ class ScannerTriggerEvent(models.Model):
 
 class UserScannerSettings(models.Model):
     """
-    Per-user preference: follow scanner or not.
-    (Later: channel preferences, muted symbols, etc.)
+    Per-user settings for scanner + notifications.
     """
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="scanner_settings",
     )
+
+    # Live feed follow on scanner page (and eligibility for push, depending on your policy)
     follow_alerts = models.BooleanField(default=True)
 
-    # NEW: "Clear feed" marker. Users only see triggers AFTER this timestamp.
+    # "Clear feed" marker. Users only see triggers AFTER this timestamp.
     cleared_until = models.DateTimeField(null=True, blank=True)
 
     updated_at = models.DateTimeField(auto_now=True)
+
+    # --- Pushover (per-user) ---
+    pushover_enabled = models.BooleanField(default=False)
+    pushover_user_key = models.CharField(max_length=64, blank=True, default="")
+    pushover_device = models.CharField(max_length=64, blank=True, default="")
+    pushover_sound = models.CharField(max_length=32, blank=True, default="")
+    pushover_priority = models.SmallIntegerField(default=0)
+
+    # --- Trader-grade push gating (per-user) ---
+    # If set, only send push if event.score >= notify_min_score.
+    notify_min_score = models.FloatField(null=True, blank=True, default=None)
+
+    # If true, only send push if event is a HOD break (broke_hod or reason tag)
+    notify_only_hod_break = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.user_id} follow={self.follow_alerts}"

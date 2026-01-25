@@ -74,6 +74,19 @@ type WsHello = { type: "hello"; user_id: number };
 type WsTrigger = { type: "trigger"; ts?: number } & TriggerEvent;
 type WsMsg = WsHello | WsTrigger | Record<string, any>;
 
+type ScannerPrefs = {
+  follow_alerts?: boolean;
+
+  pushover_enabled?: boolean;
+  pushover_user_key?: string | null;
+  pushover_device?: string | null;
+  pushover_sound?: string | null;
+  pushover_priority?: number | null;
+
+  notify_min_score?: number | null;
+  notify_only_hod_break?: boolean;
+};
+
 function prependDedupeLimit(prev: TriggerEvent[], nextEv: TriggerEvent, limit: number) {
   const id = nextEv?.id;
   if (typeof id !== "number") return prev;
@@ -410,7 +423,7 @@ function TriggerRow({ e }: { e: TriggerEvent }) {
 
 export default function Scanner() {
   const [cfg, setCfg] = useState<ScannerConfig | null>(null);
-  const [prefs, setPrefs] = useState<{ follow_alerts: boolean } | null>(null);
+  const [prefs, setPrefs] = useState<ScannerPrefs | null>(null);
   const [universe, setUniverse] = useState<UniverseTicker[]>([]);
   const [triggers, setTriggers] = useState<TriggerEvent[]>([]);
   const [newSymbol, setNewSymbol] = useState("");
@@ -425,7 +438,11 @@ export default function Scanner() {
   const wsUrl = useMemo(() => scannerTriggersWsUrl(), []);
 
   async function refreshAll() {
-    const [c, u, p] = await Promise.all([fetchScannerConfig(), listScannerUniverse(), fetchScannerPreferences()]);
+    const [c, u, p] = await Promise.all([
+      fetchScannerConfig(),
+      listScannerUniverse(),
+      fetchScannerPreferences(),
+    ]);
     setCfg(c);
     setUniverse(u);
     setPrefs(p);
@@ -540,6 +557,10 @@ export default function Scanner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsUrl]);
 
+  const pushReady =
+    !!(prefs?.pushover_user_key && String(prefs.pushover_user_key).trim().length > 10);
+  const pushOn = !!prefs?.pushover_enabled;
+
   return (
     <div className="space-y-6">
       <Card>
@@ -548,17 +569,42 @@ export default function Scanner() {
             <div className="text-lg font-semibold flex items-center gap-3">
               <span>Triggered tickers</span>
               <span className="text-xs opacity-70">WS: {wsStatus}</span>
+
+              {/* Push status badge */}
+              {!pushReady ? (
+                <Badge variant="outline">Push: needs setup</Badge>
+              ) : pushOn ? (
+                <Badge variant="success">Push: on</Badge>
+              ) : (
+                <Badge variant="secondary">Push: off</Badge>
+              )}
             </div>
 
-            <div className="flex items-center gap-3 text-sm">
-              <span>Follow alerts</span>
-              <Switch
-                checked={!!prefs?.follow_alerts}
-                onCheckedChange={async (v) => {
-                  const next = await updateScannerPreferences({ follow_alerts: v });
-                  setPrefs(next);
-                }}
-              />
+            <div className="flex items-center gap-5 text-sm">
+              {/* Feed toggle */}
+              <div className="flex items-center gap-3">
+                <span>Live feed</span>
+                <Switch
+                  checked={!!prefs?.follow_alerts}
+                  onCheckedChange={async (v) => {
+                    const next = await updateScannerPreferences({ follow_alerts: v });
+                    setPrefs(next);
+                  }}
+                />
+              </div>
+
+              {/* Quick push toggle (only if ready) */}
+              <div className="flex items-center gap-3">
+                <span>Push</span>
+                <Switch
+                  checked={!!prefs?.pushover_enabled}
+                  disabled={!pushReady}
+                  onCheckedChange={async (v) => {
+                    const next = await updateScannerPreferences({ pushover_enabled: v });
+                    setPrefs(next);
+                  }}
+                />
+              </div>
             </div>
           </div>
 
