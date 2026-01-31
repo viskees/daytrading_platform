@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from scanner.services.barstore_redis import fetch_bars
-from scanner.services.engine import Bar1m
+from scanner.services.types import Bar1m
 
 
 def fetch_latest_bars_1m(symbols: List[str], lookback_minutes: int) -> Dict[str, List[Bar1m]]:

@@ -4,7 +4,7 @@ from datetime import timedelta
 from typing import Dict, List
 
 from django.utils import timezone
-from scanner.services.engine import Bar1m
+from scanner.services.types import Bar1m
 
 
 class DataProviderError(Exception):

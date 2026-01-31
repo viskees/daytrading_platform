@@ -14,7 +14,7 @@ class ScannerConfig(models.Model):
 
     # Volume ignition
     min_vol_1m = models.PositiveIntegerField(default=50000)
-    rvol_lookback_minutes = models.PositiveIntegerField(default=30)
+    rvol_lookback_minutes = models.PositiveIntegerField(default=180)
     rvol_1m_threshold = models.FloatField(default=4.0)
     rvol_5m_threshold = models.FloatField(default=2.5)
 

@@ -1,201 +1,77 @@
-Scanner System – Findings & Gaps (Authoritative List)
+######
+trigger backend health --> green/red light; hover gives all status info which is now in the github
+Hot 5 --> Last update received time/second display
+
+######
+
+Summary of what I recommend you implement next (aligned with your bullets)
+	1.	Define trading day as PM+RTH using 04:00 ET boundary
+	2.	Store bars under day-scoped Redis keys scanner:bars:{day}:{symbol}
+	3.	HOD computed over all bars since day start (not sliding)
+	4.	rVol baselines:
+	•	rvol_1m baseline: 30–60 mins
+	•	rvol_5m baseline: 60–120 mins
+	5.	Reset: new day means new Redis keyspace; DB retains triggers (with retention cleanup)
+
+#####
+
+C) Your HOT5 can surface junk (illiquid spikes) even if triggers won’t
+
+HOT5 is computed from all_metrics for all symbols, regardless of whether minimum volume / liquidity filters are met.
+
+So a thin name with a weird print can bubble into HOT5 and distract you.
+
+Recommendation: apply at least:
+	•	min vol_1m filter (or min dollar volume)
+	•	optional min price / spread sanity gate (even a cheap heuristic)
 
 ⸻
 
-1. ❌ HOT5 websocket publishing is broken (runtime bug)
+D) No retention policy for ScannerTriggerEvent
 
-Location: scanner/services/engine.py → _hot_item()
-	•	hod_distance_pct is referenced but never defined.
-	•	Causes a NameError that is swallowed by try/except.
-	•	Result: HOT5 never reaches the frontend, even though websocket connects.
+DB table will grow forever. This becomes performance pain and makes cooldown queries heavier.
 
-Status: Hard blocker
-Fix: Compute hod_distance_pct inside _hot_item() (same logic as serializer).
-
-⸻
-
-2. ⚠️ Redis DB index mismatch risk (silent failure)
-
-Locations:
-	•	Django settings default → Redis DB 1
-	•	Bar store fallback → Redis DB 0
-	•	Ingestor fallback → Redis DB 0
-
-If any process runs without the env loaded:
-	•	bars go into /0
-	•	engine reads from /1
-	•	scanner appears “idle” with no errors
-
-Status: Hidden operational trap
-Fix: Single Redis URL source (prefer Django settings everywhere).
+Recommendation: add cleanup:
+	•	Keep last N days (e.g. 7–30), or
+	•	Partition by day/week, or
+	•	Periodic delete job via Celery beat.
 
 ⸻
 
-3. ❌ Scanner depends entirely on external ingestor health (no safety net)
+Trading-quality improvements (high impact, not hard)
 
-Location: scanner_ingest_ws management command + IB Gateway
-	•	Scanner engine assumes Redis is populated.
-	•	No fallback, no “no data” warning.
-	•	If IBKR disconnects → scanner silently starves.
-
-Status: Hard operational dependency
-Fix: Health visibility + stale-data detection.
-
-⸻
-
-4. ⚠️ No scanner / ingestor health visibility (UX + ops gap)
-
-You do write optional Redis heartbeats, but:
-	•	No API endpoint exposes scanner health
-	•	No frontend indicator:
-	•	ingestor connected?
-	•	bars flowing?
-	•	last update timestamp?
-
-Daytrader impact: “Is it quiet… or broken?”
-
-Fix: /api/scanner/status/ + simple UI badge.
+If you want this to feel like a “real trader scanner”, these are the next features that matter:
+	1.	Dollar volume filters (vol * price) > threshold
+	2.	Relative volume vs same time-of-day (stronger than simple rolling avg)
+	3.	Levels that matter: PMH, PDH, VWAP reclaim, ORB (opening range break)
+	4.	Halt detection (or at least: gap in bars / zero prints / abnormal bar patterns)
+	5.	Cooldown smarter than time-only: re-alert on new level break (you started this with new HOD, extend it)
 
 ⸻
 
-5. ⚠️ HOD logic is window-based, not session-based
+Dev/ops troubleshooting checklist (scanner)
 
-Location: compute_metrics()
-	•	HOD = max high of last rvol_lookback_minutes
-	•	This is not true session HOD (premarket + RTH)
-
-Daytrader impact:
-	•	“HOD break” triggers too often
-	•	notify_only_hod_break loses meaning
-
-Fix options:
-	•	Explicitly document as rolling HOD
-	•	OR track true session HOD in Redis
-
-⸻
-
-6. ⚠️ Cooldown logic is DB-heavy and non-scalable
-
-Location: allow_trigger_with_cooldown()
-	•	One DB query per symbol per tick
-	•	Fine for ~20 symbols
-	•	Will degrade badly at 200+
-
-Daytrader impact: late alerts = missed entries
-Fix: Cache last trigger state per symbol in Redis.
+If scanner “doesn’t work”, here’s the real failure chain to verify:
+	1.	IBKR ingestor running?
+	•	scanner:ingestor:heartbeat updating
+	•	Redis lists scanner:bars:SYMBOL receiving new bars
+	2.	Celery beat firing scanner_tick every minute?
+	•	Confirm periodic task exists and enabled
+	•	Confirm worker logs show scanner_tick: created=...
+	3.	Engine enabled + universe populated?
+	•	ScannerConfig.enabled=True
+	•	Universe tickers enabled + uppercase clean symbols
+	4.	Channels working?
+	•	WS connects, joins user_{id} group, receives hello
+	•	Test with emit_test_event and emit_test_hot5
+	5.	Pushover only after the task bug is fixed
+	•	Then verify per-user gating: follow_alerts, pushover_enabled, cleared_until, thresholds.
 
 ⸻
 
-7. ⚠️ WebSocket auth relies on session login side-effect
-
-Details:
-	•	REST API → JWT auth
-	•	WebSocket → Django session auth
-	•	Session exists only because token login calls django_login()
-
-Risk:
-	•	Any future auth refactor breaks WS silently
-	•	Mobile / external clients won’t work
-
-Fix: JWT auth middleware for Channels (future-proofing).
-
-⸻
-
-8. ⚠️ Two websocket client implementations in frontend
-
-Locations:
-	•	useTriggerStream.ts
-	•	Scanner.tsx (full implementation)
-
-Risk:
-	•	Logic drift
-	•	Harder debugging
-
-Fix: Keep one canonical WS handler.
-
-⸻
-
-9. ⚠️ Scanner runs 24/7 with no market-hours gating
-	•	No premarket / RTH / after-hours control
-	•	No timezone normalization (important for EU user trading US markets)
-
-Daytrader impact: noise, overnight spam
-Fix: Add market-hours gating (config or per-user).
-
-⸻
-
-10. ⚠️ HOT5 ranking is purely instantaneous (no persistence / smoothing)
-	•	HOT5 is recomputed every tick
-	•	No hysteresis or smoothing
-	•	Rankings may “jump” aggressively
-
-Daytrader impact: visual instability
-Fix: Optional smoothing or short rolling average.
-
-⸻
-
-11. ⚠️ No persistence of HOT5 history
-	•	Triggers are stored (good)
-	•	HOT5 snapshots are not
-
-Daytrader impact: cannot review “what was hot at 09:37?”
-Fix: Optional HOT5 snapshot model (future).
-
-⸻
-
-12. ⚠️ Scanner config is global, but behavior feels per-user
-	•	ScannerConfig is global
-	•	Users expect personal thresholds eventually
-
-Status: Not wrong, but a roadmap constraint
-Fix: Split “engine config” vs “user preferences” later.
-
-⸻
-
-13. ⚠️ Universe management is manual and static
-	•	ScannerUniverseTicker is admin-managed only
-	•	No auto-add / auto-remove logic (volume, gap, etc.)
-
-Daytrader impact: extra manual upkeep
-Fix: Later phase — dynamic universe builder.
-
-⸻
-
-14. ⚠️ No alert “severity” normalization across configs
-	•	Trigger score is config-dependent
-	•	Comparing alerts across config changes is misleading
-
-Fix: Normalize score or store relative rank.
-
-⸻
-
-15. ⚠️ No explicit backtesting or replay hook (but you’re close)
-	•	You store full trigger context (great)
-	•	But no replay engine for historical bars
-
-Fix: Later — replay bar ingestion into Redis + engine.
-
-⸻
-
-Recommended tracking order (very intentional)
-
-Phase 1 – Make it visibly alive
-	1.	Fix HOT5 NameError (Item 1)
-	2.	Lock Redis URL consistency (Item 2)
-	3.	Add scanner/ingestor status endpoint (Item 4)
-
-Phase 2 – Make it trader-trustworthy
-4. Decide HOD semantics (Item 5)
-5. Market-hours gating (Item 9)
-6. Cooldown caching (Item 6)
-
-Phase 3 – Make it scale & evolve
-7. WS auth hardening (Item 7)
-8. Frontend WS consolidation (Item 8)
-9. HOT5 smoothing / persistence (Items 10–11)
-
-⸻
-
-If you want, next we can:
-	•	turn this list into a checkbox roadmap
-	•	or start with Item #1 + #2 and I’ll give you exact diff-ready patches and confirm when we can tick them off ✅
+Priority fix list (my recommended order)
+	1.	Fix Pushover getattr bug ('ev typo)
+	2.	Fix provider Bar1m imports (future-proofing)
+	3.	Make session-aware calculations (HOD, rVol baseline, %change windows)
+	4.	Add DB retention for trigger events
+	5.	Apply basic liquidity gates to HOT5 (and optionally triggers)
