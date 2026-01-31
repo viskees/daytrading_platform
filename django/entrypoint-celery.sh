@@ -22,19 +22,26 @@ done
 echo "Postgres is ready."
 
 # Wait for Redis
+# NOTE: standard is REDIS_URL. Do NOT require REDIS_PING_URL.
 if [ -z "${REDIS_URL:-}" ]; then
   echo "ERROR: REDIS_URL is not set"
   exit 1
 fi
 
-echo "Waiting for Redis..."
+echo "Waiting for Redis at ${REDIS_URL} ..."
 python - <<'PY'
 import os, time
 from urllib.parse import urlparse
-u = urlparse(os.environ["REDIS_URL"])
+
+url = (os.getenv("REDIS_URL") or "").strip()
+if not url:
+    raise SystemExit("REDIS_URL is empty")
+
+u = urlparse(url)
 host = u.hostname or "redis"
 port = u.port or 6379
 db = int((u.path or "/0").lstrip("/") or "0")
+
 import redis
 deadline = time.time() + 30
 while True:

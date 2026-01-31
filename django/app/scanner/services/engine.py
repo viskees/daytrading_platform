@@ -9,7 +9,7 @@ from django.utils import timezone
 from scanner.models import ScannerConfig, ScannerUniverseTicker, ScannerTriggerEvent, UserScannerSettings
 from scanner.serializers import ScannerTriggerEventSerializer
 from scanner.services.barstore_redis import fetch_bars
-from scanner.services.realtime import publish_trigger_event_to_users
+from scanner.services.realtime import publish_hotlist_to_users, publish_trigger_event_to_users
 from scanner.services.types import Bar1m
 
 
@@ -192,6 +192,50 @@ def _dedupe_tags(tags: List[str]) -> List[str]:
     return out
 
 
+def _hot_item(m: Metrics) -> Dict[str, object]:
+    """
+    Lean websocket row for the HOT5 table.
+    Keep it minimal and stable for the frontend.
+
+    Note: hod_distance_pct must be computed here (do NOT rely on serializer),
+    because HOT5 items are derived from Metrics, not a DB model instance.
+    """
+    # Distance from current/last price to HOD in percent.
+    # Positive means price is below HOD. (Matches ScannerTriggerEventSerializer)
+    hod_distance_pct: Optional[float] = None
+    try:
+        last_price = float(m.bar.c)
+        hod = float(m.hod or 0.0)
+        if abs(last_price) >= 1e-9 and hod > 0.0:
+            hod_distance_pct = (hod - last_price) / last_price * 100.0
+    except Exception:
+        hod_distance_pct = None
+
+    # Ensure ts exists and is serializable
+    try:
+        bar_ts = m.bar.ts.isoformat()
+    except Exception:
+        bar_ts = ""
+
+    return {
+        "symbol": m.symbol,
+        "score": float(m.score),
+        "last_price": float(m.bar.c),
+        "pct_change_1m": float(m.pct_change_1m),
+        "pct_change_5m": float(m.pct_change_5m),
+        "rvol_1m": float(m.rvol_1m),
+        "rvol_5m": float(m.rvol_5m),
+        "vol_1m": float(m.vol_1m),
+        "vol_5m": float(m.vol_5m),
+        "hod": float(m.hod),
+        "hod_distance_pct": hod_distance_pct,
+        "broke_hod": bool(m.broke_hod),
+        "bar_ts": bar_ts,
+        # Optional: helps debugging in UI / logs; harmless if frontend ignores
+        "reason_tags": list(m.reason_tags or []),
+    }
+
+
 def run_engine_once(now: Optional[datetime] = None) -> int:
     """
     Run one full scanner pass over the universe using bars buffered in Redis.
@@ -200,7 +244,6 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
     now = now or timezone.now()
 
     cfg, _ = ScannerConfig.objects.get_or_create(id=1)
-
     if not cfg.enabled:
         return 0
 
@@ -214,8 +257,12 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
     follower_ids = list(
         UserScannerSettings.objects.filter(follow_alerts=True).values_list("user_id", flat=True)
     )
+    live_feed_user_ids = list(
+        UserScannerSettings.objects.filter(live_feed_enabled=True).values_list("user_id", flat=True)
+    )
 
     created = 0
+    all_metrics: List[Metrics] = []
 
     for sym in symbols:
         bars = bars_map.get(sym) or []
@@ -224,7 +271,9 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
             continue
 
         m, _extra = res
+        all_metrics.append(m)
 
+        # --- Trigger logic (unchanged behavior) ---
         if not allow_trigger_with_cooldown(m, cfg, now):
             continue
 
@@ -272,19 +321,29 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
         )
         created += 1
 
-        # Realtime broadcast (payload matches REST serializer)
+        # Realtime broadcast of trigger (payload matches REST serializer)
         try:
             payload = ScannerTriggerEventSerializer(ev).data
             publish_trigger_event_to_users(follower_ids, payload)
         except Exception:
             pass
 
-        # Pushover notify (async) - import inside to avoid circular imports
+        # Pushover notify (async)
         try:
             from scanner.tasks import scanner_notify_pushover_trigger
             scanner_notify_pushover_trigger.delay(ev.id)
         except Exception:
-            # Engine should never crash because notification enqueue failed
+            pass
+
+    # --- HOT5 broadcast (independent from triggers) ---
+    # Only publish if we have enough metrics and there are live-feed users.
+    if all_metrics and live_feed_user_ids:
+        try:
+            top = sorted(all_metrics, key=lambda x: float(x.score or 0.0), reverse=True)[:5]
+            items = [_hot_item(m) for m in top]
+            publish_hotlist_to_users(live_feed_user_ids, items)
+        except Exception:
+            # best-effort
             pass
 
     return created

@@ -162,6 +162,7 @@ class UserScannerSettingsSerializer(serializers.ModelSerializer):
         model = UserScannerSettings
         fields = [
             "follow_alerts",
+            "live_feed_enabled",
             "cleared_until",
 
             # Pushover user-configurable fields (per user)

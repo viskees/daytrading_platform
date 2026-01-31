@@ -106,8 +106,12 @@ class UserScannerSettings(models.Model):
         related_name="scanner_settings",
     )
 
-    # Live feed follow on scanner page (and eligibility for push, depending on your policy)
+    # Trigger feed + eligibility for push alerts
     follow_alerts = models.BooleanField(default=True)
+
+    # NEW: live websocket feed for scanner page (hotlist updates, etc.)
+    # Decoupled from follow_alerts so you can watch live without getting push spam.
+    live_feed_enabled = models.BooleanField(default=True)
 
     # "Clear feed" marker. Users only see triggers AFTER this timestamp.
     cleared_until = models.DateTimeField(null=True, blank=True)
@@ -129,4 +133,4 @@ class UserScannerSettings(models.Model):
     notify_only_hod_break = models.BooleanField(default=False)
 
     def __str__(self):
-        return f"{self.user_id} follow={self.follow_alerts}"
+        return f"{self.user_id} follow={self.follow_alerts} live={self.live_feed_enabled}"

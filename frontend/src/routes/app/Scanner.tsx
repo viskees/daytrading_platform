@@ -1,9 +1,11 @@
 // frontend/src/routes/app/Scanner.tsx
-// Adds: click-to-expand per trigger row, showing 5m values + hides raw "Why" behind expand.
-// Also auto-expands rows that triggered primarily on 5m conditions.
-// Adds: live "Age" updating WITHOUT refreshing and WITHOUT re-rendering whole rows (single shared ticker).
+// Dashboard-style Scanner page:
+// - 3 reorderable/collapsible panels (Trigger feed, Heatmap/Top-5, Settings)
+// - WS supports: trigger (existing), hot5 (top 5 scored), universe (optional per-symbol stats)
+// - Keeps your TriggerRow UI + live Age ticker
 
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import DashboardPanel from "@/components/dashboard/DashboardPanel";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,9 +21,31 @@ import {
   fetchScannerPreferences,
   updateScannerPreferences,
   emitScannerTestEvent,
+  emitScannerTestHot5,
   scannerTriggersWsUrl,
   clearScannerTriggers,
+  fetchScannerAdminStatus,
 } from "@/lib/api";
+
+import {
+  DndContext,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+
+import {
+  SortableContext,
+  useSortable,
+  arrayMove,
+  verticalListSortingStrategy,
+  sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
+
+import { CSS } from "@dnd-kit/utilities";
 
 type ScannerConfig = {
   id: number;
@@ -69,13 +93,9 @@ type TriggerEvent = {
   trigger_age_seconds?: number | null;
 };
 
-// WS message shape you’re sending from backend
-type WsHello = { type: "hello"; user_id: number };
-type WsTrigger = { type: "trigger"; ts?: number } & TriggerEvent;
-type WsMsg = WsHello | WsTrigger | Record<string, any>;
-
 type ScannerPrefs = {
   follow_alerts?: boolean;
+  live_feed_enabled?: boolean;
 
   pushover_enabled?: boolean;
   pushover_user_key?: string | null;
@@ -87,11 +107,33 @@ type ScannerPrefs = {
   notify_only_hod_break?: boolean;
 };
 
+type HotTicker = {
+  symbol: string;
+  score?: number | null;
+  last_price?: number | null;
+  rvol_1m?: number | null;
+  rvol_5m?: number | null;
+  pct_change_1m?: number | null;
+  pct_change_5m?: number | null;
+  vol_1m?: number | null;
+  vol_5m?: number | null;
+  hod?: number | null;
+  hod_distance_pct?: number | null;
+  broke_hod?: boolean | null;
+  reason_tags?: string[];
+};
+
+// WS message shapes
+type WsHello = { type: "hello"; user_id: number };
+type WsTrigger = { type: "trigger"; ts?: number } & TriggerEvent;
+type WsHot5 = { type: "hot5"; ts?: number; items: HotTicker[] };
+type WsUniverse = { type: "universe"; ts?: number } & HotTicker; // per-symbol updates (optional)
+type WsMsg = WsHello | WsTrigger | WsHot5 | WsUniverse | Record<string, any>;
+
 function prependDedupeLimit(prev: TriggerEvent[], nextEv: TriggerEvent, limit: number) {
   const id = nextEv?.id;
   if (typeof id !== "number") return prev;
 
-  // If we already have it, replace in place (keeps ordering stable)
   const idx = prev.findIndex((x) => x.id === id);
   if (idx >= 0) {
     const copy = prev.slice();
@@ -99,13 +141,11 @@ function prependDedupeLimit(prev: TriggerEvent[], nextEv: TriggerEvent, limit: n
     return copy.slice(0, limit);
   }
 
-  // New event: prepend
   return [nextEv, ...prev].slice(0, limit);
 }
 
 /* =========================
    Trader-friendly helpers
-   (frontend-only interpretation)
    ========================= */
 
 function n(x: any): number | null {
@@ -134,8 +174,32 @@ function fmtPx(v: number | null) {
   return v.toFixed(2);
 }
 
-function hasTag(e: TriggerEvent, tag: string) {
+function hasTag(e: { reason_tags?: string[] }, tag: string) {
   return Array.isArray(e?.reason_tags) && e.reason_tags.includes(tag);
+}
+
+function statusVariant(ok: boolean | null | undefined): any {
+  if (ok === true) return "success";
+  if (ok === false) return "danger";
+  return "outline";
+}
+
+function hbVariant(ageSeconds: number | null | undefined): any {
+  if (ageSeconds == null) return "outline";
+  if (ageSeconds <= 60) return "success";
+  if (ageSeconds <= 180) return "warn";
+  return "danger";
+}
+
+function hbLabel(ageSeconds: number | null | undefined): string {
+  if (ageSeconds == null) return "Ingestor: —";
+  if (ageSeconds < 60) return `Ingestor: ${ageSeconds}s`;
+  const m = Math.floor(ageSeconds / 60);
+  const s = ageSeconds % 60;
+  if (m < 60) return `Ingestor: ${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `Ingestor: ${h}h ${mm}m`;
 }
 
 /**
@@ -160,13 +224,7 @@ function headlineLabel(e: TriggerEvent): string {
   return "Volume pop";
 }
 
-/**
- * HOD proximity status:
- * hod_distance_pct = (HOD - last)/last * 100
- * small => near HOD (breakout context)
- * large => far below HOD (pullback/room)
- */
-function hodStatus(e: TriggerEvent): { label: string; variant: any } {
+function hodStatus(e: { hod_distance_pct?: number | null }): { label: string; variant: any } {
   const d = n(e.hod_distance_pct);
   if (d == null) return { label: "HOD: —", variant: "outline" };
 
@@ -198,8 +256,6 @@ function FlameRow({ rvol1m }: { rvol1m: number | null }) {
 
 /* =========================
    Live "now" ticker (single shared timer)
-   - avoids re-rendering the full page/list
-   - only components subscribing to the ticker update
    ========================= */
 
 const NOW_TICK_MS = 5000;
@@ -237,7 +293,6 @@ const nowStore = (() => {
 })();
 
 function useNowMs(): number {
-  // Server-side fallback not relevant here; but keep stable anyway
   return useSyncExternalStore(nowStore.subscribe, nowStore.getSnapshot, nowStore.getSnapshot);
 }
 
@@ -255,13 +310,9 @@ function formatAgeFromSeconds(totalSeconds: number): string {
   return `${h}h ${mm}m`;
 }
 
-const AgeText = React.memo(function AgeText(props: {
-  triggeredAt: string;
-  fallbackAgeSeconds?: number | null;
-}) {
+const AgeText = React.memo(function AgeText(props: { triggeredAt: string; fallbackAgeSeconds?: number | null }) {
   const nowMs = useNowMs();
 
-  // Primary source of truth: triggered_at timestamp (frontend computes live)
   const tsMs = Date.parse(props.triggeredAt);
   let ageSeconds: number | null = null;
 
@@ -271,7 +322,6 @@ const AgeText = React.memo(function AgeText(props: {
     ageSeconds = Math.max(0, Number(props.fallbackAgeSeconds));
   }
 
-  // tabular + fixed-ish width so it doesn't "dance" while updating
   return (
     <span className="font-semibold tabular-nums inline-block min-w-[4.5rem] text-right">
       {ageSeconds == null ? "—" : formatAgeFromSeconds(ageSeconds)}
@@ -280,34 +330,24 @@ const AgeText = React.memo(function AgeText(props: {
 });
 
 /**
- * If the trigger was primarily due to 5m conditions,
- * we want to auto-expand it so the trader immediately sees %5m + rVol5m.
+ * If trigger was primarily due to 5m conditions, auto-expand it.
  */
 function shouldAutoExpand(e: TriggerEvent): boolean {
   const tags = e.reason_tags || [];
   const has5m = tags.includes("PCT_5M_THR") || tags.includes("RVOL_5M_THR") || tags.includes("RVOL_5M");
   const has1m = tags.includes("PCT_1M_THR") || tags.includes("RVOL_1M_THR") || tags.includes("RVOL_1M");
-
-  // auto-expand if 5m present and 1m not strongly present
   return !!has5m && !has1m;
 }
 
 function TriggerRow({ e }: { e: TriggerEvent }) {
   const [expanded, setExpanded] = useState<boolean>(() => shouldAutoExpand(e));
 
-  // If a WS update replaces this row with same id but different tags,
-  // we don't want to constantly collapse/expand. So we only auto-expand
-  // if it was previously collapsed AND now qualifies.
   useEffect(() => {
     if (!expanded && shouldAutoExpand(e)) setExpanded(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [e.id]);
+  }, [e.id, (e.reason_tags || []).join("|")]);
 
-  const ts = new Date(e.triggered_at).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  const ts = new Date(e.triggered_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
   const label = headlineLabel(e);
 
@@ -332,7 +372,6 @@ function TriggerRow({ e }: { e: TriggerEvent }) {
 
   return (
     <div className="border rounded-md p-3 space-y-2">
-      {/* top line */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-3">
           <div className="text-lg font-semibold">{e.symbol}</div>
@@ -370,7 +409,6 @@ function TriggerRow({ e }: { e: TriggerEvent }) {
         </div>
       </div>
 
-      {/* middle line (always visible) */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
         <FlameRow rvol1m={r1} />
 
@@ -394,15 +432,13 @@ function TriggerRow({ e }: { e: TriggerEvent }) {
         </span>
       </div>
 
-      {/* expand panel */}
       {expanded && (
         <div className="rounded-md border border-slate-800/60 bg-slate-950/40 p-3 space-y-2">
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <Badge variant="outline">5m context</Badge>
 
             <span className="opacity-80">
-              rVol 5m:{" "}
-              <span className="font-semibold">{r5 != null ? `${r5.toFixed(2)}x` : "—"}</span>
+              rVol 5m: <span className="font-semibold">{r5 != null ? `${r5.toFixed(2)}x` : "—"}</span>
             </span>
 
             <span className="opacity-80">
@@ -421,12 +457,222 @@ function TriggerRow({ e }: { e: TriggerEvent }) {
   );
 }
 
+/* =========================
+   Dashboard-style layout for Scanner
+   ========================= */
+
+type ScannerWidgetId = "triggers" | "heatmap" | "settings";
+type ScannerWidgetState = { id: ScannerWidgetId; open: boolean };
+
+const SCANNER_LAYOUT_KEY = "scanner_layout_v1";
+
+const DEFAULT_SCANNER_LAYOUT: ScannerWidgetState[] = [
+  { id: "triggers", open: true },
+  { id: "heatmap", open: true },
+  { id: "settings", open: true },
+];
+
+const PANEL_TITLES: Record<ScannerWidgetId, string> = {
+  triggers: "Triggered tickers",
+  heatmap: "Heatmap (Top 5 scored)",
+  settings: "Scanner settings",
+};
+
+function normalizeScannerLayout(input: unknown): ScannerWidgetState[] {
+  const byId = new Map<ScannerWidgetId, ScannerWidgetState>();
+  for (const d of DEFAULT_SCANNER_LAYOUT) byId.set(d.id, { ...d });
+
+  if (Array.isArray(input)) {
+    for (const raw of input) {
+      if (!raw || typeof raw !== "object") continue;
+      const obj = raw as any;
+      const id = obj.id as ScannerWidgetId;
+      if (!byId.has(id)) continue;
+      byId.set(id, { id, open: typeof obj.open === "boolean" ? obj.open : true });
+    }
+
+    const ordered: ScannerWidgetState[] = [];
+    for (const raw of input) {
+      const id = (raw as any)?.id as ScannerWidgetId;
+      if (byId.has(id)) ordered.push(byId.get(id)!);
+      byId.delete(id);
+    }
+    for (const remaining of byId.values()) ordered.push(remaining);
+    return ordered;
+  }
+
+  return DEFAULT_SCANNER_LAYOUT;
+}
+
+function SortableScannerItem({
+  id,
+  title,
+  isOpen,
+  onToggle,
+  children,
+}: {
+  id: string;
+  title: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <DashboardPanel
+        title={title}
+        isOpen={isOpen}
+        onToggle={onToggle}
+        dragHandleProps={{
+          ...attributes,
+          ...listeners,
+        }}
+      >
+        {children}
+      </DashboardPanel>
+    </div>
+  );
+}
+
+function HeatmapList({
+  wsStatus,
+  hot5,
+  universeMap,
+}: {
+  wsStatus: string;
+  hot5: HotTicker[];
+  universeMap: Record<string, HotTicker>;
+}) {
+  const rows = (hot5 || []).map((x) => {
+    const sym = String(x.symbol || "").toUpperCase();
+    const merged = { ...universeMap[sym], ...x, symbol: sym };
+    return merged;
+  });
+
+  if (!rows.length) {
+    return (
+      <div className="text-sm opacity-70">
+        No heatmap data yet.{" "}
+        <span className="opacity-70">
+          (Waiting for <code>type: "hot5"</code> on WS. Current WS: {wsStatus})
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="text-left">
+          <tr className="border-b">
+            <th className="py-2 pr-2">#</th>
+            <th className="py-2 pr-2">Symbol</th>
+            <th className="py-2 pr-2">Score</th>
+            <th className="py-2 pr-2">Px</th>
+            <th className="py-2 pr-2">rVol 1m</th>
+            <th className="py-2 pr-2">%1m</th>
+            <th className="py-2 pr-2">%5m</th>
+            <th className="py-2 pr-2">Vol 1m</th>
+            <th className="py-2 pr-2">To HOD</th>
+            <th className="py-2 pr-2">Flags</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((t, i) => {
+            const score = n(t.score);
+            const px = n(t.last_price);
+            const r1 = n(t.rvol_1m);
+            const p1 = n(t.pct_change_1m);
+            const p5 = n(t.pct_change_5m);
+            const v1 = n(t.vol_1m);
+            const toHod = n(t.hod_distance_pct);
+            const hod = hodStatus({ hod_distance_pct: toHod });
+
+            return (
+              <tr key={t.symbol} className="border-b last:border-none">
+                <td className="py-2 pr-2 tabular-nums">{i + 1}</td>
+                <td className="py-2 pr-2 font-semibold">{t.symbol}</td>
+                <td className="py-2 pr-2 tabular-nums">{score != null ? Math.round(score) : "—"}</td>
+                <td className="py-2 pr-2 tabular-nums">{fmtPx(px)}</td>
+                <td className="py-2 pr-2 tabular-nums">{r1 != null ? `${r1.toFixed(2)}x` : "—"}</td>
+                <td className="py-2 pr-2 tabular-nums">{fmtPct(p1, 2)}</td>
+                <td className="py-2 pr-2 tabular-nums">{fmtPct(p5, 2)}</td>
+                <td className="py-2 pr-2 tabular-nums">{fmtK(v1)}</td>
+                <td className="py-2 pr-2">
+                  <Badge variant={hod.variant}>{hod.label}</Badge>
+                </td>
+                <td className="py-2 pr-2">
+                  <div className="flex flex-wrap gap-1">
+                    {t.broke_hod ? <Badge variant="success">HOD</Badge> : null}
+                    {r1 != null && r1 >= 4 ? <Badge variant="info">HOT</Badge> : null}
+                    {p1 != null && p1 >= 2 ? <Badge variant="secondary">MOMO</Badge> : null}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      <div className="mt-2 text-xs opacity-60">
+        Tip: once backend sends <code>universe</code> updates, we’ll merge them into the Top-5 rows for “every new bar” UX.
+      </div>
+    </div>
+  );
+}
+
+function Field(props: {
+  label: string;
+  value: number;
+  disabled?: boolean;
+  float?: boolean;
+  onSave: (v: number) => Promise<void>;
+}) {
+  const [local, setLocal] = useState(String(props.value ?? ""));
+
+  useEffect(() => setLocal(String(props.value ?? "")), [props.value]);
+
+  return (
+    <div className="space-y-1">
+      <div className="text-xs opacity-70">{props.label}</div>
+      <div className="flex gap-2">
+        <Input value={local} disabled={props.disabled} onChange={(e) => setLocal(e.target.value)} />
+        <Button
+          variant="outline"
+          disabled={props.disabled}
+          onClick={async () => {
+            const nn = props.float ? Number(local) : parseInt(local, 10);
+            if (!Number.isFinite(nn)) return;
+            await props.onSave(nn);
+          }}
+        >
+          Save
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function Scanner() {
   const [cfg, setCfg] = useState<ScannerConfig | null>(null);
   const [prefs, setPrefs] = useState<ScannerPrefs | null>(null);
   const [universe, setUniverse] = useState<UniverseTicker[]>([]);
   const [triggers, setTriggers] = useState<TriggerEvent[]>([]);
   const [newSymbol, setNewSymbol] = useState("");
+
+  const [hot5, setHot5] = useState<HotTicker[]>([]);
+  const [universeMap, setUniverseMap] = useState<Record<string, HotTicker>>({});
+
+  const [adminStatus, setAdminStatus] = useState<ScannerAdminStatus | null>(null);
+  const [adminStatusErr, setAdminStatusErr] = useState<string | null>(null);
 
   const [wsStatus, setWsStatus] = useState<"connecting" | "open" | "closed" | "error">("closed");
   const wsRef = useRef<WebSocket | null>(null);
@@ -437,15 +683,62 @@ export default function Scanner() {
   const canEdit = !!cfg?.can_edit;
   const wsUrl = useMemo(() => scannerTriggersWsUrl(), []);
 
+  const [scannerLayout, setScannerLayout] = useState<ScannerWidgetState[]>(() => {
+    try {
+      const stored = localStorage.getItem(SCANNER_LAYOUT_KEY);
+      return stored ? normalizeScannerLayout(JSON.parse(stored)) : DEFAULT_SCANNER_LAYOUT;
+    } catch {
+      return DEFAULT_SCANNER_LAYOUT;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SCANNER_LAYOUT_KEY, JSON.stringify(scannerLayout));
+    } catch {
+      // ignore
+    }
+  }, [scannerLayout]);
+
+  const togglePanel = (id: ScannerWidgetId) => {
+    setScannerLayout((prev) => prev.map((p) => (p.id === id ? { ...p, open: !p.open } : p)));
+  };
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over) return;
+    if (active.id === over.id) return;
+
+    setScannerLayout((prev) => {
+      const oldIndex = prev.findIndex((p) => p.id === active.id);
+      const newIndex = prev.findIndex((p) => p.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+  };
+
   async function refreshAll() {
-    const [c, u, p] = await Promise.all([
-      fetchScannerConfig(),
-      listScannerUniverse(),
-      fetchScannerPreferences(),
-    ]);
+    const [c, u, p] = await Promise.all([fetchScannerConfig(), listScannerUniverse(), fetchScannerPreferences()]);
     setCfg(c);
     setUniverse(u);
     setPrefs(p);
+  }
+
+  async function refreshAdminStatus() {
+    try {
+      const s = await fetchScannerAdminStatus();
+      // s === null -> not admin (403), hide it quietly
+      setAdminStatus(s);
+      setAdminStatusErr(null);
+    } catch (e: any) {
+      setAdminStatusErr(String(e?.message || e || "status error"));
+      // keep last known status (don’t wipe) so UI doesn't flicker
+    }
   }
 
   async function refreshTriggers() {
@@ -455,6 +748,7 @@ export default function Scanner() {
 
   useEffect(() => {
     aliveRef.current = true;
+    let statusTimer: number | null = null;
 
     const clearReconnect = () => {
       if (reconnectTimerRef.current) {
@@ -526,11 +820,37 @@ export default function Scanner() {
 
         if ((msg as any).type === "hello") return;
 
+        // Existing: trigger event
         if ((msg as any).type === "trigger") {
           const t = msg as WsTrigger;
           if (typeof t.id === "number") {
             setTriggers((prev) => prependDedupeLimit(prev, t, 25));
           }
+          return;
+        }
+
+        // New: hot5 list push
+        if ((msg as any).type === "hot5") {
+          const h = msg as WsHot5;
+          const items = Array.isArray(h.items) ? h.items : [];
+          setHot5(
+            items
+              .map((x) => ({ ...x, symbol: String(x.symbol || "").toUpperCase() }))
+              .filter((x) => !!x.symbol)
+          );
+          return;
+        }
+
+        // Optional: universe per-symbol updates
+        if ((msg as any).type === "universe") {
+          const u = msg as WsUniverse;
+          const sym = String((u as any).symbol || "").toUpperCase();
+          if (!sym) return;
+          setUniverseMap((prev) => ({
+            ...prev,
+            [sym]: { ...(prev[sym] || {}), ...u, symbol: sym },
+          }));
+          return;
         }
       };
 
@@ -548,300 +868,443 @@ export default function Scanner() {
 
     refreshAll();
     refreshTriggers();
+    refreshAdminStatus();
     connect();
+
+    // Poll scanner status (admin-only endpoint). Non-admins just get null and we hide it.
+    statusTimer = window.setInterval(() => {
+      if (!aliveRef.current) return;
+      refreshAdminStatus();
+    }, 10000);
 
     return () => {
       aliveRef.current = false;
+      if (statusTimer) {
+        window.clearInterval(statusTimer);
+        statusTimer = null;
+      }
       cleanupWs();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsUrl]);
 
-  const pushReady =
-    !!(prefs?.pushover_user_key && String(prefs.pushover_user_key).trim().length > 10);
+  const pushReady = !!(prefs?.pushover_user_key && String(prefs.pushover_user_key).trim().length > 10);
   const pushOn = !!prefs?.pushover_enabled;
 
+  const liveFeedEnabled = prefs?.live_feed_enabled;
+  const followAlerts = prefs?.follow_alerts;
+
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardContent className="space-y-3">
-          <div className="flex flex-row items-center justify-between">
-            <div className="text-lg font-semibold flex items-center gap-3">
-              <span>Triggered tickers</span>
-              <span className="text-xs opacity-70">WS: {wsStatus}</span>
-
-              {/* Push status badge */}
-              {!pushReady ? (
-                <Badge variant="outline">Push: needs setup</Badge>
-              ) : pushOn ? (
-                <Badge variant="success">Push: on</Badge>
-              ) : (
-                <Badge variant="secondary">Push: off</Badge>
-              )}
-            </div>
-
-            <div className="flex items-center gap-5 text-sm">
-              {/* Feed toggle */}
-              <div className="flex items-center gap-3">
-                <span>Live feed</span>
-                <Switch
-                  checked={!!prefs?.follow_alerts}
-                  onCheckedChange={async (v) => {
-                    const next = await updateScannerPreferences({ follow_alerts: v });
-                    setPrefs(next);
-                  }}
-                />
-              </div>
-
-              {/* Quick push toggle (only if ready) */}
-              <div className="flex items-center gap-3">
-                <span>Push</span>
-                <Switch
-                  checked={!!prefs?.pushover_enabled}
-                  disabled={!pushReady}
-                  onCheckedChange={async (v) => {
-                    const next = await updateScannerPreferences({ pushover_enabled: v });
-                    setPrefs(next);
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-
-          {triggers.length === 0 ? (
-            <div className="text-sm opacity-70">No triggers yet.</div>
-          ) : (
-            <div className="space-y-2">
-              {triggers.map((e) => (
-                <TriggerRow key={e.id} e={e} />
-              ))}
-            </div>
-          )}
-
-          <div className="pt-3 flex gap-2">
-            {canEdit && (
-              <Button
-                variant="outline"
-                onClick={async () => {
-                  await emitScannerTestEvent("TEST");
-                }}
-              >
-                Emit test event
-              </Button>
-            )}
-
-            <Button
-              variant="outline"
-              onClick={async () => {
-                await refreshTriggers();
-              }}
-            >
-              Refresh (REST)
-            </Button>
-
-            <Button
-              variant="outline"
-              onClick={async () => {
-                await clearScannerTriggers();
-                setTriggers([]);
-              }}
-            >
-              Clear
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Universe + Config */}
-      <div className="grid md:grid-cols-2 gap-6">
-        <Card>
-          <CardContent className="space-y-3">
-            <div className="flex flex-row items-center justify-between">
-              <div className="text-lg font-semibold">Universe (MVP ~50 tickers)</div>
-            </div>
-
-            {canEdit ? (
-              <div className="flex gap-2">
-                <Input
-                  value={newSymbol}
-                  placeholder="Add symbol (e.g. AAPL)"
-                  onChange={(e) => setNewSymbol(e.target.value)}
-                />
-                <Button
-                  onClick={async () => {
-                    const sym = newSymbol.trim().toUpperCase();
-                    if (!sym) return;
-                    await addScannerUniverseTicker(sym);
-                    setNewSymbol("");
-                    setUniverse(await listScannerUniverse());
-                  }}
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={scannerLayout.map((p) => p.id)} strategy={verticalListSortingStrategy}>
+        <div className="flex flex-col gap-4">
+          {scannerLayout.map((p) => {
+            // 1) Triggers
+            if (p.id === "triggers") {
+              return (
+                <SortableScannerItem
+                  key={p.id}
+                  id={p.id}
+                  title={PANEL_TITLES[p.id]}
+                  isOpen={p.open}
+                  onToggle={() => togglePanel(p.id)}
                 >
-                  Add
-                </Button>
-              </div>
-            ) : (
-              <div className="text-sm opacity-70">Universe is managed by admin.</div>
-            )}
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-lg font-semibold flex flex-wrap items-center gap-3">
+                        <span>Triggered tickers</span>
+                        <span className="text-xs opacity-70">WS: {wsStatus}</span>
 
-            <div className="space-y-2">
-              {universe.map((t) => (
-                <div key={t.id} className="flex items-center justify-between border rounded-md p-2">
-                  <div className="font-medium">{t.symbol}</div>
-                  {canEdit && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={async () => {
-                        await deleteScannerUniverseTicker(t.id);
-                        setUniverse(await listScannerUniverse());
-                      }}
-                    >
-                      Remove
-                    </Button>
-                  )}
+                        {/* Admin health badges (hidden for non-admins) */}
+                        {adminStatus ? (
+                          <>
+                            <Badge variant={statusVariant(adminStatus.db_ok)}>DB</Badge>
+                            <Badge variant={statusVariant(adminStatus.redis_ok)}>Redis</Badge>
+                            <Badge variant={statusVariant(adminStatus.channels_ok)}>Channels</Badge>
+                            <Badge variant={hbVariant(adminStatus?.ingestor?.age_seconds)}>
+                              {hbLabel(adminStatus?.ingestor?.age_seconds)}
+                            </Badge>
+                        
+                            {/* Optional: show scanner enabled */}
+                            {typeof adminStatus.scanner_enabled === "boolean" ? (
+                              adminStatus.scanner_enabled ? (
+                                <Badge variant="info">Scanner: enabled</Badge>
+                              ) : (
+                                <Badge variant="outline">Scanner: disabled</Badge>
+                              )
+                            ) : null}
+
+                            {/* Optional: surface fetch errors without being noisy */}
+                            {adminStatusErr ? (
+                              <span className="text-xs opacity-60">status err</span>
+                            ) : null}
+                          </>
+                        ) : null}
+
+                        {!pushReady ? (
+                          <Badge variant="outline">Push: needs setup</Badge>
+                        ) : pushOn ? (
+                          <Badge variant="success">Push: on</Badge>
+                        ) : (
+                          <Badge variant="secondary">Push: off</Badge>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-5 text-sm">
+                        <div className="flex items-center gap-3">
+                          <span>Follow alerts</span>
+                          <Switch
+                            checked={!!followAlerts}
+                            onCheckedChange={async (v) => {
+                              const next = await updateScannerPreferences({ follow_alerts: v });
+                              setPrefs(next);
+                            }}
+                          />
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <span>Push</span>
+                          <Switch
+                            checked={!!prefs?.pushover_enabled}
+                            disabled={!pushReady}
+                            onCheckedChange={async (v) => {
+                              const next = await updateScannerPreferences({ pushover_enabled: v });
+                              setPrefs(next);
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {triggers.length === 0 ? (
+                      <div className="text-sm opacity-70">No triggers yet.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {triggers.map((e) => (
+                          <TriggerRow key={e.id} e={e} />
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="pt-3 flex flex-wrap gap-2">
+                      {canEdit && (
+                        <Button
+                          variant="outline"
+                          onClick={async () => {
+                            await emitScannerTestEvent("TEST");
+                          }}
+                        >
+                          Emit test event
+                        </Button>
+                      )}
+
+                      <Button
+                        variant="outline"
+                        onClick={async () => {
+                          await refreshTriggers();
+                        }}
+                      >
+                        Refresh (REST)
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={async () => {
+                          await refreshAdminStatus();
+                        }}
+                      >
+                        Refresh status
+                      </Button>
+
+                      <Button
+                        variant="outline"
+                        onClick={async () => {
+                          await clearScannerTriggers();
+                          setTriggers([]);
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                  </div>
+                </SortableScannerItem>
+              );
+            }
+
+            // 2) Heatmap
+            if (p.id === "heatmap") {
+              return (
+                <SortableScannerItem
+                  key={p.id}
+                  id={p.id}
+                  title={PANEL_TITLES[p.id]}
+                  isOpen={p.open}
+                  onToggle={() => togglePanel(p.id)}
+                >
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-sm opacity-80">
+                        Shows the top 5 “most eligible” tickers by score. (WS-driven)
+                      </div>
+
+                      <div className="flex items-center gap-3 text-sm">
+                        <span>Realtime heatmap</span>
+                        <Switch
+                          checked={!!liveFeedEnabled}
+                          onCheckedChange={async (v) => {
+                            // Works once backend adds live_feed_enabled; until then it will be ignored server-side.
+                            const next = await updateScannerPreferences({ live_feed_enabled: v });
+                            setPrefs(next);
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <HeatmapList wsStatus={wsStatus} hot5={hot5} universeMap={universeMap} />
+
+                    <div className="pt-3 flex flex-wrap gap-2">
+                      {canEdit && (
+                        <Button
+                          variant="outline"
+                          onClick={async () => {
+                            await emitScannerTestHot5();
+                          }}
+                        >
+                          Emit test HOT5
+                        </Button>
+                      )}
+
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setHot5([]);
+                          setUniverseMap({});
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                  </div>
+                </SortableScannerItem>
+              );
+            }
+
+            // 3) Settings
+            return (
+              <SortableScannerItem
+                key={p.id}
+                id={p.id}
+                title={PANEL_TITLES[p.id]}
+                isOpen={p.open}
+                onToggle={() => togglePanel(p.id)}
+              >
+                <div className="grid lg:grid-cols-2 gap-6">
+                  {/* Universe */}
+                  <Card>
+                    <CardContent className="space-y-3 p-4">
+                      <div className="text-lg font-semibold">Universe (MVP ~50 tickers)</div>
+
+                      {canEdit ? (
+                        <div className="flex gap-2">
+                          <Input
+                            value={newSymbol}
+                            placeholder="Add symbol (e.g. AAPL)"
+                            onChange={(e) => setNewSymbol(e.target.value)}
+                          />
+                          <Button
+                            onClick={async () => {
+                              const sym = newSymbol.trim().toUpperCase();
+                              if (!sym) return;
+                              await addScannerUniverseTicker(sym);
+                              setNewSymbol("");
+                              setUniverse(await listScannerUniverse());
+                            }}
+                          >
+                            Add
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="text-sm opacity-70">Universe is managed by admin.</div>
+                      )}
+
+                      <div className="space-y-2">
+                        {universe.map((t) => (
+                          <div key={t.id} className="flex items-center justify-between border rounded-md p-2">
+                            <div className="font-medium">{t.symbol}</div>
+                            {canEdit && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={async () => {
+                                  await deleteScannerUniverseTicker(t.id);
+                                  setUniverse(await listScannerUniverse());
+                                }}
+                              >
+                                Remove
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                        {universe.length === 0 && <div className="text-sm opacity-70">No universe tickers yet.</div>}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Config + user gating */}
+                  <Card>
+                    <CardContent className="space-y-4 p-4">
+                      <div className="text-lg font-semibold">Trigger configuration</div>
+
+                      {!cfg ? (
+                        <div className="text-sm opacity-70">Loading…</div>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm">Scanner enabled</div>
+                            <Switch
+                              checked={cfg.enabled}
+                              disabled={!canEdit}
+                              onCheckedChange={async (v) => {
+                                const next = await updateScannerConfig({ enabled: v });
+                                setCfg(next);
+                              }}
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3">
+                            <Field
+                              label="Min vol 1m"
+                              value={cfg.min_vol_1m}
+                              disabled={!canEdit}
+                              onSave={async (v) => setCfg(await updateScannerConfig({ min_vol_1m: v }))}
+                            />
+                            <Field
+                              label="Lookback (min)"
+                              value={cfg.rvol_lookback_minutes}
+                              disabled={!canEdit}
+                              onSave={async (v) => setCfg(await updateScannerConfig({ rvol_lookback_minutes: v }))}
+                            />
+                            <Field
+                              label="rVol 1m thr"
+                              value={cfg.rvol_1m_threshold}
+                              disabled={!canEdit}
+                              float
+                              onSave={async (v) => setCfg(await updateScannerConfig({ rvol_1m_threshold: v }))}
+                            />
+                            <Field
+                              label="rVol 5m thr"
+                              value={cfg.rvol_5m_threshold}
+                              disabled={!canEdit}
+                              float
+                              onSave={async (v) => setCfg(await updateScannerConfig({ rvol_5m_threshold: v }))}
+                            />
+                            <Field
+                              label="% 1m min"
+                              value={cfg.min_pct_change_1m}
+                              disabled={!canEdit}
+                              float
+                              onSave={async (v) => setCfg(await updateScannerConfig({ min_pct_change_1m: v }))}
+                            />
+                            <Field
+                              label="% 5m min"
+                              value={cfg.min_pct_change_5m}
+                              disabled={!canEdit}
+                              float
+                              onSave={async (v) => setCfg(await updateScannerConfig({ min_pct_change_5m: v }))}
+                            />
+                            <Field
+                              label="Cooldown (min)"
+                              value={cfg.cooldown_minutes}
+                              disabled={!canEdit}
+                              onSave={async (v) => setCfg(await updateScannerConfig({ cooldown_minutes: v }))}
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm">Require green candle</div>
+                            <Switch
+                              checked={cfg.require_green_candle}
+                              disabled={!canEdit}
+                              onCheckedChange={async (v) => setCfg(await updateScannerConfig({ require_green_candle: v }))}
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm">Require HOD break</div>
+                            <Switch
+                              checked={cfg.require_hod_break}
+                              disabled={!canEdit}
+                              onCheckedChange={async (v) => setCfg(await updateScannerConfig({ require_hod_break: v }))}
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm">Re-alert on new HOD</div>
+                            <Switch
+                              checked={cfg.realert_on_new_hod}
+                              disabled={!canEdit}
+                              onCheckedChange={async (v) => setCfg(await updateScannerConfig({ realert_on_new_hod: v }))}
+                            />
+                          </div>
+
+                          <div className="border-t pt-4 space-y-3">
+                            <div className="text-sm font-semibold">Push gating (per-user)</div>
+
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-sm">Notify only on HOD break</div>
+                              <Switch
+                                checked={!!prefs?.notify_only_hod_break}
+                                onCheckedChange={async (v) => {
+                                  const next = await updateScannerPreferences({ notify_only_hod_break: v });
+                                  setPrefs(next);
+                                }}
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="text-xs opacity-70">Minimum score to push (optional)</div>
+                              <div className="flex gap-2">
+                                <Input
+                                  type="number"
+                                  value={prefs?.notify_min_score ?? ""}
+                                  onChange={(e) => {
+                                    const raw = e.target.value;
+                                    const vv = raw === "" ? null : Number(raw);
+                                    setPrefs((prev) => ({
+                                      ...(prev || {}),
+                                      notify_min_score: Number.isFinite(vv as any) ? (vv as any) : null,
+                                    }));
+                                  }}
+                                />
+                                <Button
+                                  variant="outline"
+                                  onClick={async () => {
+                                    const v = prefs?.notify_min_score;
+                                    const next = await updateScannerPreferences({ notify_min_score: v ?? null });
+                                    setPrefs(next);
+                                  }}
+                                >
+                                  Save
+                                </Button>
+                              </div>
+                              <div className="text-[11px] opacity-60">
+                                If set, push fires only when <code>event.score &gt;= min</code>.
+                              </div>
+                            </div>
+                          </div>
+
+                          {!canEdit && (
+                            <div className="text-xs opacity-70">Config is visible but only editable by admin.</div>
+                          )}
+                        </>
+                      )}
+                    </CardContent>
+                  </Card>
                 </div>
-              ))}
-              {universe.length === 0 && <div className="text-sm opacity-70">No universe tickers yet.</div>}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="space-y-3">
-            <div className="flex flex-row items-center justify-between">
-              <div className="text-lg font-semibold">Trigger configuration</div>
-            </div>
-
-            {!cfg ? (
-              <div className="text-sm opacity-70">Loading…</div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between">
-                  <div className="text-sm">Scanner enabled</div>
-                  <Switch
-                    checked={cfg.enabled}
-                    disabled={!canEdit}
-                    onCheckedChange={async (v) => {
-                      const next = await updateScannerConfig({ enabled: v });
-                      setCfg(next);
-                    }}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <Field
-                    label="Min vol 1m"
-                    value={cfg.min_vol_1m}
-                    disabled={!canEdit}
-                    onSave={async (v) => setCfg(await updateScannerConfig({ min_vol_1m: v }))}
-                  />
-                  <Field
-                    label="Lookback (min)"
-                    value={cfg.rvol_lookback_minutes}
-                    disabled={!canEdit}
-                    onSave={async (v) => setCfg(await updateScannerConfig({ rvol_lookback_minutes: v }))}
-                  />
-                  <Field
-                    label="rVol 1m thr"
-                    value={cfg.rvol_1m_threshold}
-                    disabled={!canEdit}
-                    float
-                    onSave={async (v) => setCfg(await updateScannerConfig({ rvol_1m_threshold: v }))}
-                  />
-                  <Field
-                    label="rVol 5m thr"
-                    value={cfg.rvol_5m_threshold}
-                    disabled={!canEdit}
-                    float
-                    onSave={async (v) => setCfg(await updateScannerConfig({ rvol_5m_threshold: v }))}
-                  />
-                  <Field
-                    label="% 1m min"
-                    value={cfg.min_pct_change_1m}
-                    disabled={!canEdit}
-                    float
-                    onSave={async (v) => setCfg(await updateScannerConfig({ min_pct_change_1m: v }))}
-                  />
-                  <Field
-                    label="% 5m min"
-                    value={cfg.min_pct_change_5m}
-                    disabled={!canEdit}
-                    float
-                    onSave={async (v) => setCfg(await updateScannerConfig({ min_pct_change_5m: v }))}
-                  />
-                  <Field
-                    label="Cooldown (min)"
-                    value={cfg.cooldown_minutes}
-                    disabled={!canEdit}
-                    onSave={async (v) => setCfg(await updateScannerConfig({ cooldown_minutes: v }))}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="text-sm">Require green candle</div>
-                  <Switch
-                    checked={cfg.require_green_candle}
-                    disabled={!canEdit}
-                    onCheckedChange={async (v) => setCfg(await updateScannerConfig({ require_green_candle: v }))}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="text-sm">Require HOD break</div>
-                  <Switch
-                    checked={cfg.require_hod_break}
-                    disabled={!canEdit}
-                    onCheckedChange={async (v) => setCfg(await updateScannerConfig({ require_hod_break: v }))}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="text-sm">Re-alert on new HOD</div>
-                  <Switch
-                    checked={cfg.realert_on_new_hod}
-                    disabled={!canEdit}
-                    onCheckedChange={async (v) => setCfg(await updateScannerConfig({ realert_on_new_hod: v }))}
-                  />
-                </div>
-
-                {!canEdit && <div className="text-xs opacity-70">Config is visible but only editable by admin.</div>}
-              </>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-function Field(props: {
-  label: string;
-  value: number;
-  disabled?: boolean;
-  float?: boolean;
-  onSave: (v: number) => Promise<void>;
-}) {
-  const [local, setLocal] = useState(String(props.value ?? ""));
-
-  useEffect(() => setLocal(String(props.value ?? "")), [props.value]);
-
-  return (
-    <div className="space-y-1">
-      <div className="text-xs opacity-70">{props.label}</div>
-      <div className="flex gap-2">
-        <Input value={local} disabled={props.disabled} onChange={(e) => setLocal(e.target.value)} />
-        <Button
-          variant="outline"
-          disabled={props.disabled}
-          onClick={async () => {
-            const n = props.float ? Number(local) : parseInt(local, 10);
-            if (!Number.isFinite(n)) return;
-            await props.onSave(n);
-          }}
-        >
-          Save
-        </Button>
-      </div>
-    </div>
+              </SortableScannerItem>
+            );
+          })}
+        </div>
+      </SortableContext>
+    </DndContext>
   );
 }
