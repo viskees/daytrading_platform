@@ -155,7 +155,7 @@ services:
 
   ib-gateway:
     image: ghcr.io/gnzsnz/ib-gateway:stable
-    env_file: .env.prod
+    env_file: .env.dev
     networks: [internal]
     restart: unless-stopped
     environment:

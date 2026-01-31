@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import environ
 from datetime import timedelta
+from urllib.parse import urlparse, urlunparse
 
 # --------------------------------------------------------------------------------------
 # Base
@@ -201,24 +202,46 @@ REST_FRAMEWORK = {
 }
 
 # --------------------------------------------------------------------------------------
-# Cache (important for throttling to be shared across containers)
+# Redis (single source of truth + split DBs)
 # --------------------------------------------------------------------------------------
-# Use Redis in production if REDIS_URL is set. Safe fallback for dev.
-REDIS_URL = env("REDIS_URL", default="redis://redis:6379/1")
 
+def redis_with_db(url: str, db: int) -> str:
+    """
+    Force a Redis URL to use a specific DB index.
+    Example: redis://redis:6379 -> redis://redis:6379/2
+    """
+    p = urlparse(url)
+    # Keep scheme/netloc; normalize path to "/<db>"
+    return urlunparse((p.scheme, p.netloc, f"/{int(db)}", "", p.query, p.fragment))
+
+# Base redis URL (no assumption about DB index)
+# Keep this as the *only* thing you set in .env files.
+REDIS_URL = env("REDIS_URL", default="redis://redis:6379")
+
+# Derive per-purpose URLs (overrideable if you ever want to)
+REDIS_CACHE_URL = env("REDIS_CACHE_URL", default=redis_with_db(REDIS_URL, 1))
+REDIS_CHANNELS_URL = env("REDIS_CHANNELS_URL", default=redis_with_db(REDIS_URL, 2))
+REDIS_CELERY_URL = env("REDIS_CELERY_URL", default=redis_with_db(REDIS_URL, 3))
+
+# Channels (WebSocket layer)
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {"hosts": [REDIS_URL]},
+        "CONFIG": {"hosts": [REDIS_CHANNELS_URL]},
     }
 }
 
+# Django cache (throttling + shared cache across containers)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": REDIS_URL,
+        "LOCATION": REDIS_CACHE_URL,
     }
 }
+
+# Celery
+CELERY_BROKER_URL = REDIS_CELERY_URL
+CELERY_RESULT_BACKEND = REDIS_CELERY_URL
 
 
 # --------------------------------------------------------------------------------------
@@ -276,9 +299,6 @@ SCANNER_ADMIN_EMAIL = env("SCANNER_ADMIN_EMAIL", default="")
 # --- Pushover (optional channel for scanner alerts) ---
 PUSHOVER_APP_TOKEN = env("PUSHOVER_APP_TOKEN", default="").strip()
 # --------------------------------------------------------------------------------------
-
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
 
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"

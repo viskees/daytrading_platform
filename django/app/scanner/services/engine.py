@@ -8,9 +8,17 @@ from django.utils import timezone
 
 from scanner.models import ScannerConfig, ScannerUniverseTicker, ScannerTriggerEvent, UserScannerSettings
 from scanner.serializers import ScannerTriggerEventSerializer
-from scanner.services.barstore_redis import fetch_bars
-from scanner.services.realtime import publish_trigger_event_to_users
+from scanner.services.barstore_redis import fetch_bars, get_hod_state, rebuild_hod_state_from_bars
+from scanner.services.realtime import publish_hotlist_to_users, publish_trigger_event_to_users
+from scanner.services.trading_day import current_trading_day_id
 from scanner.services.types import Bar1m
+
+
+# --- MVP-professional rVol baselines (pure intraday, day-scoped bars) ---
+# 1m rVol baseline: 30–60 minutes (pick 45 as a stable default)
+RVOL_1M_BASELINE_MINUTES_DEFAULT = 45
+# 5m rVol baseline: 60–120 minutes (pick 90 as a stable default)
+RVOL_5M_BASELINE_MINUTES_DEFAULT = 90
 
 
 @dataclass(frozen=True)
@@ -30,7 +38,19 @@ class Metrics:
     reason_tags: List[str]
 
 
-def compute_metrics(symbol: str, bars: List[Bar1m], lookback_minutes: int) -> Optional[Tuple[Metrics, Dict]]:
+def _avg(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / max(len(values), 1))
+
+
+def compute_metrics(
+    symbol: str,
+    bars: List[Bar1m],
+    lookback_minutes: int,
+    hod: float,
+    prior_hod: Optional[float],
+) -> Optional[Tuple[Metrics, Dict]]:
     """
     bars: assumed oldest-first input.
     returns Metrics for the last bar.
@@ -50,23 +70,74 @@ def compute_metrics(symbol: str, bars: List[Bar1m], lookback_minutes: int) -> Op
     vol_1m = float(last.v)
     vol_5m = float(sum(b.v for b in last5))
 
-    # rolling avg of 1m volume over lookback window (exclude last bar to reduce self-inflation)
-    lb = min(max(lookback_minutes, 5), len(bars) - 1)
-    lookback_slice = bars[-(lb + 1):-1]
-    avg_vol = float(sum(b.v for b in lookback_slice) / max(len(lookback_slice), 1))
+    # -----------------------------
+    # rVol baselines (pure intraday)
+    # -----------------------------
+    # Your config field rvol_lookback_minutes is currently used as a generic lookback.
+    # For #4 we keep it, but apply trader-grade defaults for 1m vs 5m baselines.
+    #
+    # If you later want them configurable, we can add fields to ScannerConfig:
+    #   rvol_1m_baseline_minutes, rvol_5m_baseline_minutes
+    #
+    base_1m = int(max(5, RVOL_1M_BASELINE_MINUTES_DEFAULT))
+    base_5m = int(max(10, RVOL_5M_BASELINE_MINUTES_DEFAULT))
 
-    # avoid divide by zero
-    rvol_1m = vol_1m / max(avg_vol, 1.0)
-    rvol_5m = vol_5m / max(avg_vol * 5.0, 1.0)
+    # Exclude the last bar from baseline to avoid self-inflation
+    # 1m baseline slice: last base_1m bars (excluding current)
+    avail_excl_last = len(bars) - 1
+    lb_1m = min(base_1m, avail_excl_last)
+    slice_1m = bars[-(lb_1m + 1):-1] if lb_1m > 0 else []
+    avg_vol_1m = _avg([float(b.v) for b in slice_1m])
 
+    # 5m baseline:
+    # compute rolling 5-bar sums over the baseline window (excluding any window that includes the current bar)
+    # Need at least 5 bars to compute a single 5m sum.
+    # We'll use up to base_5m minutes of data excluding the current bar.
+    lb_5m = min(base_5m, avail_excl_last)
+    slice_5m = bars[-(lb_5m + 1):-1] if lb_5m > 0 else []
+
+    rolling_5m_sums: List[float] = []
+    if len(slice_5m) >= 5:
+        # build rolling sums over the slice (oldest-first)
+        vols = [float(b.v) for b in slice_5m]
+        # rolling window sum length 5
+        w = 5
+        running = sum(vols[:w])
+        rolling_5m_sums.append(float(running))
+        for i in range(w, len(vols)):
+            running += vols[i] - vols[i - w]
+            rolling_5m_sums.append(float(running))
+
+    avg_vol_5m = _avg(rolling_5m_sums)
+
+    # Avoid divide by zero (use 1.0 floor)
+    rvol_1m = vol_1m / max(avg_vol_1m, 1.0)
+    rvol_5m = vol_5m / max(avg_vol_5m, 1.0)
+
+    # -----------------------------
+    # Price changes
+    # -----------------------------
     pct_change_1m = (last.c - prev.c) / max(prev.c, 1e-9) * 100.0
     pct_change_5m = (last.c - prev5.c) / max(prev5.c, 1e-9) * 100.0
 
-    prior_hod = float(max(b.h for b in bars[:-1]))
-    hod = float(max(prior_hod, float(last.h)))
-    broke_hod = bool(float(last.h) > prior_hod)
+    # -----------------------------
+    # HOD from Redis (day-scoped)
+    # -----------------------------
+    hod = float(hod or 0.0)
+    ph = prior_hod
 
-    # Basic score (tune later): weight volume ignition + movement + hod break
+    if ph is None:
+        # Best-effort fallback: approximate from available bars excluding last
+        try:
+            ph = float(max(b.h for b in bars[:-1])) if len(bars) >= 2 else None
+        except Exception:
+            ph = None
+
+    broke_hod = bool(ph is not None and float(last.h) > float(ph))
+
+    # -----------------------------
+    # Basic score (tune later)
+    # -----------------------------
     score = 0.0
     score += min(rvol_1m, 20.0) * 5.0
     score += min(max(pct_change_1m, 0.0), 10.0) * 4.0
@@ -88,7 +159,7 @@ def compute_metrics(symbol: str, bars: List[Bar1m], lookback_minutes: int) -> Op
         bar=last,
         vol_1m=vol_1m,
         vol_5m=vol_5m,
-        avg_vol_1m_lookback=avg_vol,
+        avg_vol_1m_lookback=float(avg_vol_1m),  # keep field meaning coherent
         rvol_1m=rvol_1m,
         rvol_5m=rvol_5m,
         pct_change_1m=pct_change_1m,
@@ -146,11 +217,6 @@ def in_cooldown(symbol: str, now: datetime, cooldown_minutes: int) -> bool:
 def allow_trigger_with_cooldown(m: Metrics, cfg: ScannerConfig, now: datetime) -> bool:
     """
     Cooldown gate with optional 'realert on new HOD' override.
-
-    - If not in cooldown => True
-    - If in cooldown:
-        - if realert_on_new_hod is False => False
-        - if realert_on_new_hod is True => True only when current HOD exceeds last trigger's HOD
     """
     cutoff = now - timedelta(minutes=cfg.cooldown_minutes)
 
@@ -192,6 +258,43 @@ def _dedupe_tags(tags: List[str]) -> List[str]:
     return out
 
 
+def _hot_item(m: Metrics) -> Dict[str, object]:
+    """
+    Lean websocket row for the HOT5 table.
+    Keep it minimal and stable for the frontend.
+    """
+    hod_distance_pct: Optional[float] = None
+    try:
+        last_price = float(m.bar.c)
+        hod = float(m.hod or 0.0)
+        if abs(last_price) >= 1e-9 and hod > 0.0:
+            hod_distance_pct = (hod - last_price) / last_price * 100.0
+    except Exception:
+        hod_distance_pct = None
+
+    try:
+        bar_ts = m.bar.ts.isoformat()
+    except Exception:
+        bar_ts = ""
+
+    return {
+        "symbol": m.symbol,
+        "score": float(m.score),
+        "last_price": float(m.bar.c),
+        "pct_change_1m": float(m.pct_change_1m),
+        "pct_change_5m": float(m.pct_change_5m),
+        "rvol_1m": float(m.rvol_1m),
+        "rvol_5m": float(m.rvol_5m),
+        "vol_1m": float(m.vol_1m),
+        "vol_5m": float(m.vol_5m),
+        "hod": float(m.hod),
+        "hod_distance_pct": hod_distance_pct,
+        "broke_hod": bool(m.broke_hod),
+        "bar_ts": bar_ts,
+        "reason_tags": list(m.reason_tags or []),
+    }
+
+
 def run_engine_once(now: Optional[datetime] = None) -> int:
     """
     Run one full scanner pass over the universe using bars buffered in Redis.
@@ -200,7 +303,6 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
     now = now or timezone.now()
 
     cfg, _ = ScannerConfig.objects.get_or_create(id=1)
-
     if not cfg.enabled:
         return 0
 
@@ -209,22 +311,56 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
     if not symbols:
         return 0
 
-    bars_map = fetch_bars(symbols, minutes=cfg.rvol_lookback_minutes)
+    day = current_trading_day_id(now)
+    bars_map = fetch_bars(symbols, minutes=cfg.rvol_lookback_minutes, day=day)
 
     follower_ids = list(
         UserScannerSettings.objects.filter(follow_alerts=True).values_list("user_id", flat=True)
     )
+    live_feed_user_ids = list(
+        UserScannerSettings.objects.filter(live_feed_enabled=True).values_list("user_id", flat=True)
+    )
 
     created = 0
+    all_metrics: List[Metrics] = []
 
     for sym in symbols:
         bars = bars_map.get(sym) or []
-        res = compute_metrics(sym, bars, lookback_minutes=cfg.rvol_lookback_minutes)
+
+        # Need enough bars for 5m logic
+        if len(bars) < 6:
+            continue
+
+        # --- HOD state (fast path) ---
+        hod, prev_hod, hod_ts = get_hod_state(sym, day)
+
+        # --- Self-heal if missing or stale ---
+        last_ts = bars[-1].ts if bars else None
+        needs_rebuild = (
+            hod is None
+            or hod_ts is None
+            or (last_ts is not None and hod_ts is not None and last_ts > hod_ts)
+        )
+        if needs_rebuild:
+            hod, prev_hod, hod_ts = rebuild_hod_state_from_bars(sym, day)
+
+        if hod is None:
+            continue
+
+        res = compute_metrics(
+            sym,
+            bars,
+            lookback_minutes=cfg.rvol_lookback_minutes,
+            hod=float(hod),
+            prior_hod=prev_hod,
+        )
         if not res:
             continue
 
         m, _extra = res
+        all_metrics.append(m)
 
+        # --- Trigger logic ---
         if not allow_trigger_with_cooldown(m, cfg, now):
             continue
 
@@ -272,19 +408,27 @@ def run_engine_once(now: Optional[datetime] = None) -> int:
         )
         created += 1
 
-        # Realtime broadcast (payload matches REST serializer)
+        # Realtime broadcast of trigger (payload matches REST serializer)
         try:
             payload = ScannerTriggerEventSerializer(ev).data
             publish_trigger_event_to_users(follower_ids, payload)
         except Exception:
             pass
 
-        # Pushover notify (async) - import inside to avoid circular imports
+        # Pushover notify (async)
         try:
             from scanner.tasks import scanner_notify_pushover_trigger
             scanner_notify_pushover_trigger.delay(ev.id)
         except Exception:
-            # Engine should never crash because notification enqueue failed
+            pass
+
+    # --- HOT5 broadcast (independent from triggers) ---
+    if all_metrics and live_feed_user_ids:
+        try:
+            top = sorted(all_metrics, key=lambda x: float(x.score or 0.0), reverse=True)[:5]
+            items = [_hot_item(m) for m in top]
+            publish_hotlist_to_users(live_feed_user_ids, items)
+        except Exception:
             pass
 
     return created

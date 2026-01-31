@@ -1073,6 +1073,52 @@ const api = {
     apiFetch(path, { ...opts, method: "DELETE" }),
 };
 
+// ----------------------------- Scanner Admin Status ---------------------
+
+export type ScannerAdminStatus = {
+  ok: boolean;
+  now?: string;
+  scanner_enabled?: boolean | null;
+
+  db_ok: boolean;
+  redis_ok: boolean;
+  channels_ok: boolean;
+
+  redis_url?: string;
+
+  ingestor?: {
+    heartbeat_key?: string;
+    heartbeat_raw?: string | null;
+    heartbeat_ts?: string | null;
+    age_seconds?: number | null;
+  };
+
+  errors?: {
+    db?: string | null;
+    redis?: string | null;
+    channels?: string | null;
+    heartbeat?: string | null;
+  };
+};
+
+/**
+ * Admin-only endpoint:
+ * GET /api/scanner/admin/status/
+ *
+ * Notes:
+ * - If user is not admin, backend returns 403 → we return null (so UI can hide it).
+ * - If backend is temporarily unreachable, we throw so the UI can show “unknown”.
+ */
+export async function fetchScannerAdminStatus(): Promise<ScannerAdminStatus | null> {
+  const res = await authedFetch("/api/scanner/admin/status/");
+  if (res.status === 403) return null; // not an admin -> hide status UI
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    throw new Error(msg || "Failed to fetch scanner admin status");
+  }
+  return (await res.json()) as ScannerAdminStatus;
+}
+
 // ----------------------------- Scanner API ------------------------------
 export async function fetchScannerConfig() {
   const res = await authedFetch("/api/scanner/config/1/");
@@ -1161,6 +1207,15 @@ export async function emitScannerTestEvent(symbol: string) {
     body: JSON.stringify({ symbol }),
   });
   if (!res.ok) throw new Error("Failed to emit test event");
+  return await res.json();
+}
+
+export async function emitScannerTestHot5(symbols?: string[]) {
+  const res = await authedFetch("/api/scanner/admin/emit_test_hot5/", {
+    method: "POST",
+    body: JSON.stringify(symbols && symbols.length ? { symbols } : {}),
+  });
+  if (!res.ok) throw new Error("Failed to emit test HOT5");
   return await res.json();
 }
 

@@ -19,6 +19,9 @@ from ib_insync import IB, Stock
 from scanner.models import ScannerUniverseTicker
 from scanner.services.barstore_redis import delete_symbol, push_bar
 from scanner.services.types import Bar1m
+from scanner.services.trading_day import current_trading_day_id, trading_day_id
+from scanner.services.trading_day import trading_day_id, current_trading_day_id
+from scanner.services.barstore_redis import delete_symbol, push_bar, update_hod_state
 
 
 def _get_enabled_symbols_sync() -> List[str]:
@@ -34,10 +37,6 @@ def _get_enabled_symbols_sync() -> List[str]:
 def _redis_client() -> redis.Redis:
     url = os.getenv("REDIS_URL") or "redis://redis:6379/0"
     return redis.Redis.from_url(url, decode_responses=True)
-
-
-def _bar_key(sym: str) -> str:
-    return f"scanner:bars:{sym.upper()}"
 
 
 def _utc(ts) -> Optional[timezone.datetime]:
@@ -255,7 +254,10 @@ class Command(BaseCommand):
                 if log_bars:
                     self.stdout.write(f"BAR {sym} {ts.isoformat()} O={o} H={h} L={l} C={c} V={v}")
 
-                push_bar(sym, Bar1m(ts=ts, o=o, h=h, l=l, c=c, v=v), keep=keep)
+                day = trading_day_id(ts)
+                push_bar(sym, Bar1m(ts=ts, o=o, h=h, l=l, c=c, v=v), keep=keep, day=day)
+                update_hod_state(sym, day, bar_high=h, bar_ts=ts)
+                
             except Exception as e:
                 self.stderr.write(f"push_from_ib_bar error {sym}: {e!r}")
 
@@ -376,7 +378,8 @@ class Command(BaseCommand):
                         counts = {}
                         for s in sample:
                             try:
-                                counts[s] = int(r.llen(_bar_key(s)))
+                                day = current_trading_day_id()
+                                counts[s] = int(r.llen(f"scanner:bars:{day}:{s.upper()}"))
                             except Exception:
                                 counts[s] = -1
                         self.stdout.write(f"RedisDebug: sample={sample} counts={counts}")

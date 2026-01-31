@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from scanner.models import ScannerConfig, ScannerTriggerEvent, UserScannerSettings
 from scanner.services.engine import run_engine_once
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,28 @@ def scanner_tick(self) -> int:
     logger.info("scanner_tick: created=%s", created)
     return created
 
+@shared_task(bind=True, ignore_result=True)
+def scanner_prune_trigger_events(self, retention_days: int = 30) -> int:
+    """
+    Delete old ScannerTriggerEvent rows to prevent unbounded DB growth.
+    Returns number of rows deleted.
+    """
+    close_old_connections()
+
+    try:
+        days = int(retention_days or 30)
+    except Exception:
+        days = 30
+    if days < 1:
+        days = 1
+
+    cutoff = timezone.now() - timedelta(days=days)
+
+    qs = ScannerTriggerEvent.objects.filter(triggered_at__lt=cutoff)
+    deleted, _ = qs.delete()
+
+    logger.info("scanner_prune_trigger_events: retention_days=%s deleted=%s", days, deleted)
+    return int(deleted)
 
 def _n(x) -> Optional[float]:
     try:

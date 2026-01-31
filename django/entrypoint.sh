@@ -42,13 +42,18 @@ fi
 echo "Postgres is ready."
 
 # Wait for Redis (optional; only when REDIS_URL is set)
+# NOTE: do NOT require REDIS_PING_URL anywhere. Standard is REDIS_URL.
 if [ -n "${REDIS_URL:-}" ]; then
-  echo "REDIS_URL is set; waiting for Redis..."
+  echo "REDIS_URL is set; waiting for Redis at ${REDIS_URL} ..."
   python - <<'PY'
 import os, time
 from urllib.parse import urlparse
 
-u = urlparse(os.environ["REDIS_URL"])
+url = (os.getenv("REDIS_URL") or "").strip()
+if not url:
+    raise SystemExit("REDIS_URL is empty")
+
+u = urlparse(url)
 host = u.hostname or "redis"
 port = u.port or 6379
 db = int((u.path or "/0").lstrip("/") or "0")
@@ -61,14 +66,13 @@ while True:
         r = redis.Redis(host=host, port=port, db=db, socket_connect_timeout=1)
         r.ping()
         break
-    except Exception as e:
+    except Exception:
         if time.time() > deadline:
             raise
         time.sleep(1)
 print("Redis is ready.")
 PY
 fi
-
 
 # Migrate (retry a couple times just in case)
 for i in 1 2 3; do
@@ -91,7 +95,6 @@ mkdir -p "${PROJECT_DIR}/media" "${PROJECT_DIR}/media/journal_attachments"
 if ! touch "${PROJECT_DIR}/media/.rwtest" 2>/dev/null; then
   echo "Media root not writable by uid:gid $(id -u):$(id -g)"
   ls -ld "${PROJECT_DIR}/media" || true
-  # Helpful hint for bind mount
   echo "If you're on Linux/WSL: chown the host folder:  sudo chown -R \$USER:\$USER django/app/media"
   exit 1
 else
